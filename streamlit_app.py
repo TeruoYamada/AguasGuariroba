@@ -112,22 +112,17 @@ def setup_sidebar():
 # --- FUNÇÕES PRINCIPAIS ---
 
 def download_era5_data(params, client):
-    """Baixa dados do ERA5 conforme parâmetros"""
     try:
-        filename = f"era5_data_{params['start_date']}_{params['end_date']}.nc"
-
-        # Definindo área com buffer para visualização do mapa
-        buffer = params['map_width'] * 2  # Buffer para mapa mais amplo
-
-        # Construindo datas de forma correta
+        filename = "era5_data.nc"
+        buffer = params['map_width'] * 2
         date_range = pd.date_range(params['start_date'], params['end_date'])
 
         request = {
             'product_type': params['product_type'],
             'variable': params['precip_var'],
-            'year': sorted(list(set([str(d.year) for d in date_range]))),
-            'month': sorted(list(set([f"{d.month:02d}" for d in date_range]))),
-            'day': sorted(list(set([f"{d.day:02d}" for d in date_range]))),
+            'year': sorted({str(d.year) for d in date_range}),
+            'month': sorted({f"{d.month:02d}" for d in date_range}),
+            'day': sorted({f"{d.day:02d}" for d in date_range}),
             'time': [f"{h:02d}:00" for h in range(params['start_hour'], params['end_hour']+1, 3)],
             'area': [
                 params['lat_center'] + buffer,
@@ -138,16 +133,16 @@ def download_era5_data(params, client):
             'format': 'netcdf'
         }
 
+        st.write("📦 Request enviado à API:", request)
+
         with st.spinner("Baixando dados do ERA5..."):
-            client('reanalysis-era5-single-levels', request, filename)
+            client.retrieve('reanalysis-era5-single-levels', request, filename)
 
         return xr.open_dataset(filename)
 
     except Exception as e:
-        st.error(f"Erro ao baixar dados: {str(e)}")
-        logger.exception("Erro no download de dados")
+        st.error(f"❌ Erro ao baixar dados: {str(e)}")
         return None
-
 
 def process_precipitation_data(ds, params):
     """Processa os dados de precipitação"""
