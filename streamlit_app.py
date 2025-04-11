@@ -550,8 +550,8 @@ def main():
         if 'time' not in ds.variables:
             st.error("❌ O arquivo baixado não tem a variável 'time'. Verifique o período ou os parâmetros selecionados.")
             st.stop()
-        else:
-            timestamps = [pd.to_datetime(t.values).strftime("%Y-%m-%d %H:%M") for t in ds.time[:min(20, len(ds.time))]]
+            else:
+                timestamps = [pd.to_datetime(t.values).strftime("%Y-%m-%d %H:%M") for t in ds.time[:min(20, len(ds.time))]]
 
             
             selected_time = st.selectbox(
@@ -585,7 +585,7 @@ def main():
                     # Mapa estático
                     fig = create_precipitation_map(ds, selected_time, params)
                     st.pyplot(fig)
-        else:
+            else:
             st.info("Clique em 'Atualizar Dados' para visualizar o mapa de precipitação.")
     
     # Aba de Série Temporal
