@@ -1,9 +1,0 @@
-cdsapi
-xarray
-numpy
-matplotlib
-cartopy
-streamlit
-pandas
-geopandas
-scikit-learn
