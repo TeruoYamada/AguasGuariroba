@@ -13,6 +13,8 @@ import matplotlib.dates as mdates
 from sklearn.linear_model import LinearRegression
 from matplotlib.colors import LinearSegmentedColormap
 import logging
+import io
+from matplotlib.animation import FuncAnimation
 
 # Configuração inicial
 logging.basicConfig(level=logging.INFO)
@@ -48,13 +50,18 @@ COLORMAPS = ["Blues", "viridis", "plasma", "RdYlBu_r", "gist_earth"]
 def init_cds_client():
     """Inicializa o cliente CDS API com credenciais do secrets.toml"""
     try:
-        if 'cds' in st.secrets:
+        # Try accessing using both potential secret paths
+        if 'ads' in st.secrets:
+            url = st.secrets["ads"]["url"]
+            key = st.secrets["ads"]["key"]
+        elif 'cds' in st.secrets:
             url = st.secrets.cds.url
             key = st.secrets.cds.key
-            return cdsapi.Client(url=url, key=key)
         else:
             st.error("Credenciais do CDS não encontradas no secrets.toml")
             st.stop()
+            
+        return cdsapi.Client(url=url, key=key)
     except Exception as e:
         st.error(f"Erro ao inicializar cliente CDS: {str(e)}")
         st.stop()
@@ -113,6 +120,9 @@ def download_era5_data(params, client):
     try:
         filename = f"era5_data_{params['start_date']}_{params['end_date']}.nc"
         
+        # Definindo área com buffer para visualização do mapa
+        buffer = params['map_width'] * 2  # Buffer para mapa mais amplo
+        
         request = {
             'product_type': params['product_type'],
             'variable': params['precip_var'],
@@ -121,10 +131,10 @@ def download_era5_data(params, client):
             'day': [str(d.day) for d in pd.date_range(params['start_date'], params['end_date'])],
             'time': [f"{h:02d}:00" for h in range(params['start_hour'], params['end_hour']+1, 3)],
             'area': [
-                params['lat_center'] + params['map_width']/2,
-                params['lon_center'] - params['map_width']/2,
-                params['lat_center'] - params['map_width']/2,
-                params['lon_center'] + params['map_width']/2
+                params['lat_center'] + buffer,
+                params['lon_center'] - buffer,
+                params['lat_center'] - buffer,
+                params['lon_center'] + buffer
             ],
             'format': 'netcdf'
         }
@@ -171,11 +181,19 @@ def process_precipitation_data(ds, params):
         df['date'] = df['time'].dt.date
         daily = df.groupby('date')['precipitation'].sum().reset_index()
         
+        # Extrair séries temporais para todas as regiões
+        all_regions_data = {}
+        for region, (lat, lon) in CAMPOS_GRANDE_AREAS.items():
+            region_df = extract_point_data(ds, lat, lon)
+            if not region_df.empty:
+                all_regions_data[region] = region_df
+        
         return {
             'dataset': ds,
             'timeseries': df,
             'daily': daily,
-            'forecast': generate_forecast(df)
+            'forecast': generate_forecast(df),
+            'all_regions': all_regions_data
         }
     
     except Exception as e:
@@ -197,7 +215,7 @@ def generate_forecast(df, days=3):
     future_times = [last_time + timedelta(hours=6*i) for i in range(1, days*4+1)]
     future_seconds = [(t - df['time'].min()).total_seconds() for t in future_times]
     
-    predictions = np.maximum(model.predict(np.array(future_seconds).reshape(-1, 1), 0))
+    predictions = np.maximum(model.predict(np.array(future_seconds).reshape(-1, 1)), 0)
     
     # Adicionar sazonalidade diária
     for i, t in enumerate(future_times):
@@ -215,33 +233,6 @@ def generate_forecast(df, days=3):
         df[['time', 'precipitation']].assign(type='historical'),
         forecast
     ], ignore_index=True)
-
-# --- INTERFACE DO USUÁRIO ---
-def main():
-    st.title("🌧️ Monitoramento de Precipitação - Campo Grande")
-    st.markdown("Análise de dados de precipitação usando ERA5 do Copernicus Climate Data Store")
-    
-    # Inicialização
-    client = init_cds_client()
-    params = setup_sidebar()
-    
-    # Abas principais
-    tab1, tab2, tab3, tab4 = st.tabs(["📊 Análise", "🗺️ Mapa", "📈 Série Temporal", "ℹ️ Sobre"])
-    
-    with tab1:
-        st.header(f"Análise para {params['area']}")
-        
-        if st.button("🔄 Atualizar Análise"):
-            with st.spinner("Processando..."):
-                ds = download_era5_data(params, client)
-                
-                if ds is not None:
-                    results = process_precipitation_data(ds, params)
-                    
-                    if results:
-                        show_analysis_results(results, params)
-                    else:
-                        st.error("Dados insuficientes para análise")
 
 def show_analysis_results(results, params):
     """Exibe os resultados da análise"""
@@ -282,6 +273,377 @@ def show_analysis_results(results, params):
         ax.set_ylabel("Precipitação (mm)")
         ax.legend()
         st.pyplot(fig)
+
+def create_precipitation_map(ds, timestep, params):
+    """Cria mapa de precipitação para um timestep específico"""
+    fig = plt.figure(figsize=(12, 8))
+    
+    # Definir projeção e área
+    buffer = params['map_width'] * 2
+    projection = ccrs.PlateCarree()
+    ax = fig.add_subplot(1, 1, 1, projection=projection)
+    
+    # Adicionar características do mapa
+    ax.add_feature(cfeature.COASTLINE)
+    ax.add_feature(cfeature.BORDERS, linestyle=':')
+    ax.add_feature(cfeature.STATES, alpha=0.3)
+    
+    # Limitar área do mapa
+    ax.set_extent([
+        params['lon_center'] - buffer,
+        params['lon_center'] + buffer,
+        params['lat_center'] - buffer,
+        params['lat_center'] + buffer
+    ], crs=projection)
+    
+    # Extrair dados para o timestep
+    selected_time = ds.time[timestep].values
+    data = ds[params['precip_var']].isel(time=timestep) * 1000  # Convertendo para mm
+    
+    # Definir níveis de precipitação para o mapa de cores
+    levels = [0, 0.1, 0.5, 1, 2.5, 5, 10, 15, 20, 30, 50, 75, 100]
+    
+    # Plotar dados
+    contour = ax.contourf(
+        ds.longitude, ds.latitude, data,
+        levels=levels, 
+        cmap=params['colormap'],
+        transform=projection,
+        extend='max'
+    )
+    
+    # Adicionar marcadores para áreas de Campo Grande
+    for name, (lat, lon) in CAMPOS_GRANDE_AREAS.items():
+        ax.plot(lon, lat, 'ro', markersize=4, transform=projection)
+        ax.text(lon + 0.02, lat + 0.02, name, transform=projection, fontsize=8)
+    
+    # Adicionar barra de cores
+    cbar = plt.colorbar(contour, ax=ax, orientation='horizontal', pad=0.05, shrink=0.8)
+    cbar.set_label(PRECIPITATION_VARIABLES[params['precip_var']])
+    
+    # Adicionar título com informação do timestep
+    time_str = pd.to_datetime(selected_time).strftime('%Y-%m-%d %H:%M')
+    plt.title(f"Precipitação em Campo Grande - {time_str}")
+    
+    # Adicionar grade
+    gl = ax.gridlines(draw_labels=True, linewidth=0.5, alpha=0.5, linestyle='--')
+    gl.top_labels = False
+    gl.right_labels = False
+    
+    return fig
+
+def create_map_animation(ds, params):
+    """Cria animação dos mapas de precipitação"""
+    # Cria figura base
+    fig = plt.figure(figsize=(12, 8))
+    projection = ccrs.PlateCarree()
+    ax = fig.add_subplot(1, 1, 1, projection=projection)
+    
+    # Buffer para área do mapa
+    buffer = params['map_width'] * 2
+    
+    # Configurações básicas do mapa
+    ax.add_feature(cfeature.COASTLINE)
+    ax.add_feature(cfeature.BORDERS, linestyle=':')
+    ax.add_feature(cfeature.STATES, alpha=0.3)
+    
+    ax.set_extent([
+        params['lon_center'] - buffer,
+        params['lon_center'] + buffer,
+        params['lat_center'] - buffer,
+        params['lat_center'] + buffer
+    ], crs=projection)
+    
+    # Níveis de precipitação para o mapa de cores
+    levels = [0, 0.1, 0.5, 1, 2.5, 5, 10, 15, 20, 30, 50, 75, 100]
+    
+    # Função para atualizar o mapa para cada frame
+    def update(frame):
+        ax.clear()
+        ax.add_feature(cfeature.COASTLINE)
+        ax.add_feature(cfeature.BORDERS, linestyle=':')
+        ax.add_feature(cfeature.STATES, alpha=0.3)
+        
+        ax.set_extent([
+            params['lon_center'] - buffer,
+            params['lon_center'] + buffer,
+            params['lat_center'] - buffer,
+            params['lat_center'] + buffer
+        ], crs=projection)
+        
+        # Extrair dados para o frame atual
+        data = ds[params['precip_var']].isel(time=frame) * 1000  # Convertendo para mm
+        
+        # Plotar precipitação
+        contour = ax.contourf(
+            ds.longitude, ds.latitude, data,
+            levels=levels, 
+            cmap=params['colormap'],
+            transform=projection,
+            extend='max'
+        )
+        
+        # Adicionar marcadores para áreas de Campo Grande
+        for name, (lat, lon) in CAMPOS_GRANDE_AREAS.items():
+            ax.plot(lon, lat, 'ro', markersize=4, transform=projection)
+            
+        # Adicionar informação do timestamp
+        time_str = pd.to_datetime(ds.time[frame].values).strftime('%Y-%m-%d %H:%M')
+        ax.set_title(f"Precipitação em Campo Grande - {time_str}")
+        
+        # Adicionar grade
+        gl = ax.gridlines(draw_labels=True, linewidth=0.5, alpha=0.5, linestyle='--')
+        gl.top_labels = False
+        gl.right_labels = False
+        
+        return contour,
+    
+    # Criar animação
+    ani = FuncAnimation(
+        fig, update,
+        frames=min(10, len(ds.time)),  # Limite para os primeiros 10 frames ou menos
+        interval=params['animation_speed'],
+        blit=False
+    )
+    
+    # Adicionar barra de cores
+    plt.colorbar(update(0)[0], ax=ax, orientation='horizontal', pad=0.05, shrink=0.8)
+    
+    return ani
+
+def render_time_series(results, params):
+    """Renderiza gráficos de série temporal"""
+    if not results or not results['timeseries'].any():
+        st.warning("Dados insuficientes para renderizar séries temporais.")
+        return
+    
+    # Criar gráfico de série temporal principal
+    fig, ax = plt.subplots(figsize=(12, 6))
+    
+    # Destacar região selecionada
+    timeseries = results['timeseries']
+    ax.plot(
+        timeseries['time'], 
+        timeseries['precipitation'], 
+        'b-', 
+        linewidth=2,
+        label=params['area']
+    )
+    
+    # Adicionar outras regiões em segundo plano para comparação (até 3)
+    if 'all_regions' in results:
+        other_regions = [r for r in results['all_regions'].keys() if r != params['area']][:3]
+        for i, region in enumerate(other_regions):
+            region_data = results['all_regions'][region]
+            ax.plot(
+                region_data['time'], 
+                region_data['precipitation'], 
+                alpha=0.5,
+                linewidth=1,
+                label=region
+            )
+    
+    # Configurar formatação de data no eixo x
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%d/%m %H:%M'))
+    plt.xticks(rotation=45)
+    
+    # Adicionar títulos e legendas
+    ax.set_xlabel("Data/Hora")
+    ax.set_ylabel(PRECIPITATION_VARIABLES[params['precip_var']])
+    ax.set_title(f"Série Temporal de Precipitação - {params['area']}")
+    ax.legend()
+    
+    # Adicionar grade
+    ax.grid(True, alpha=0.3)
+    
+    # Adicionar total acumulado
+    total = timeseries['precipitation'].sum()
+    ax.text(
+        0.02, 0.95, 
+        f"Total acumulado: {total:.1f} mm",
+        transform=ax.transAxes,
+        bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="gray", alpha=0.8)
+    )
+    
+    fig.tight_layout()
+    return fig
+
+def render_comparison_chart(results):
+    """Renderiza gráfico de comparação entre regiões"""
+    if not results or 'all_regions' not in results:
+        return None
+    
+    # Calcular total acumulado por região
+    region_totals = {}
+    for region, data in results['all_regions'].items():
+        region_totals[region] = data['precipitation'].sum()
+    
+    # Ordenar por total
+    df = pd.DataFrame({
+        'Região': region_totals.keys(),
+        'Total (mm)': region_totals.values()
+    }).sort_values('Total (mm)', ascending=False)
+    
+    # Criar gráfico de barras
+    fig, ax = plt.subplots(figsize=(10, 6))
+    bars = ax.bar(df['Região'], df['Total (mm)'], color='steelblue')
+    
+    # Destacar região selecionada
+    selected_idx = df[df['Região'] == results['timeseries'].name].index
+    if not selected_idx.empty:
+        bars[selected_idx[0]].set_color('firebrick')
+    
+    # Adicionar rótulos
+    for i, v in enumerate(df['Total (mm)']):
+        ax.text(i, v + 0.1, f"{v:.1f}", ha='center', fontsize=8)
+    
+    # Configurar eixos e títulos
+    plt.xticks(rotation=45, ha='right')
+    plt.ylabel("Precipitação Total (mm)")
+    plt.title("Comparação da Precipitação Total por Região")
+    plt.tight_layout()
+    
+    return fig
+
+# --- INTERFACE DO USUÁRIO ---
+def main():
+    st.title("🌧️ Monitoramento de Precipitação - Campo Grande")
+    st.markdown("Análise de dados de precipitação usando ERA5 do Copernicus Climate Data Store")
+    
+    # Inicialização
+    client = init_cds_client()
+    params = setup_sidebar()
+    
+    # Cache para dados
+    if 'data' not in st.session_state:
+        st.session_state['data'] = None
+    if 'results' not in st.session_state:
+        st.session_state['results'] = None
+    
+    # Botão de atualização principal
+    col1, col2 = st.columns([3, 1])
+    with col2:
+        if st.button("🔄 Atualizar Dados", type="primary", use_container_width=True):
+            with st.spinner("Baixando e processando dados..."):
+                ds = download_era5_data(params, client)
+                
+                if ds is not None:
+                    st.session_state['data'] = ds
+                    st.session_state['results'] = process_precipitation_data(ds, params)
+                    st.success("Dados atualizados com sucesso!")
+                    st.rerun()
+    
+    # Abas principais
+    tab1, tab2, tab3, tab4 = st.tabs(["📊 Análise", "🗺️ Mapa", "📈 Série Temporal", "ℹ️ Sobre"])
+    
+    # Aba de Análise
+    with tab1:
+        st.header(f"Análise para {params['area']}")
+        
+        if st.session_state['results']:
+            show_analysis_results(st.session_state['results'], params)
+        else:
+            st.info("Clique em 'Atualizar Dados' para carregar a análise.")
+    
+    # Aba de Mapa
+    with tab2:
+        st.header("Mapa de Precipitação")
+        
+        if st.session_state['data'] is not None:
+            ds = st.session_state['data']
+            
+            # Seletor de timestamp
+            timestamps = [pd.to_datetime(t.values).strftime("%Y-%m-%d %H:%M") 
+                         for t in ds.time[:min(20, len(ds.time))]]
+            
+            selected_time = st.selectbox(
+                "Selecione o horário para visualização:", 
+                range(len(timestamps)), 
+                format_func=lambda i: timestamps[i]
+            )
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                # Toggle para animação
+                show_animation = st.toggle("Mostrar animação", value=False)
+            
+            # Exibir mapa estático ou animação
+            with st.spinner("Renderizando mapa..."):
+                if show_animation:
+                    try:
+                        st.warning("Animação pode levar alguns instantes para ser renderizada.")
+                        animation = create_map_animation(ds, params)
+                        
+                        # Salvar animação em buffer e exibir como vídeo
+                        ani_file = f"animation_{params['start_date']}_{params['area']}.gif"
+                        animation.save(ani_file, writer='pillow', fps=2)
+                        
+                        st.image(ani_file, caption="Animação de Precipitação", use_column_width=True)
+                        
+                    except Exception as e:
+                        st.error(f"Erro ao criar animação: {str(e)}")
+                        logger.exception("Erro na animação")
+                else:
+                    # Mapa estático
+                    fig = create_precipitation_map(ds, selected_time, params)
+                    st.pyplot(fig)
+        else:
+            st.info("Clique em 'Atualizar Dados' para visualizar o mapa de precipitação.")
+    
+    # Aba de Série Temporal
+    with tab3:
+        st.header("Série Temporal")
+        
+        if st.session_state['results']:
+            results = st.session_state['results']
+            
+            # Renderizar série temporal
+            fig_ts = render_time_series(results, params)
+            st.pyplot(fig_ts)
+            
+            # Adicionar gráfico de comparação entre regiões
+            st.subheader("Comparação entre Regiões")
+            fig_comp = render_comparison_chart(results)
+            if fig_comp:
+                st.pyplot(fig_comp)
+            
+            # Exibir dados tabulares
+            with st.expander("Dados Detalhados"):
+                st.dataframe(results['timeseries'], use_container_width=True)
+        else:
+            st.info("Clique em 'Atualizar Dados' para visualizar a série temporal.")
+    
+    # Aba Sobre
+    with tab4:
+        st.header("Sobre o Aplicativo")
+        st.markdown("""
+        ### Monitoramento de Precipitação - Campo Grande
+        
+        Este aplicativo utiliza dados do ERA5 do Copernicus Climate Data Store para monitorar e prever precipitação
+        em diferentes regiões de Campo Grande, MS.
+        
+        **Funcionalidades:**
+        - Visualização de dados históricos de precipitação
+        - Previsão baseada em tendências recentes
+        - Mapas de distribuição espacial da precipitação
+        - Análise por regiões da cidade
+        
+        **Tecnologias utilizadas:**
+        - Python
+        - Streamlit
+        - xarray para manipulação de dados meteorológicos
+        - Cartopy para visualização geográfica
+        - Scikit-learn para modelagem preditiva simples
+        
+        **Como usar:**
+        1. Selecione os parâmetros desejados na barra lateral (região, período, variável)
+        2. Clique em "Atualizar Dados" para baixar e processar os dados
+        3. Navegue pelas abas para visualizar diferentes tipos de análise
+        
+        **Observações:**
+        - Os dados do ERA5 têm resolução espacial limitada, o que pode afetar a precisão para áreas urbanas
+        - A previsão é uma estimativa simples baseada em tendências recentes
+        """)
 
 if __name__ == "__main__":
     main()
