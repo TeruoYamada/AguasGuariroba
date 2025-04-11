@@ -197,7 +197,7 @@ def generate_forecast(df, days=3):
     future_times = [last_time + timedelta(hours=6*i) for i in range(1, days*4+1)]
     future_seconds = [(t - df['time'].min()).total_seconds() for t in future_times]
     
-    predictions = np.maximum(model.predict(np.array(future_seconds).reshape(-1, 1), 0)
+    predictions = np.maximum(model.predict(np.array(future_seconds).reshape(-1, 1), 0))
     
     # Adicionar sazonalidade diária
     for i, t in enumerate(future_times):
