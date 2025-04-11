@@ -602,7 +602,7 @@ with tabs[0]:
                     # Tarde (12-18h) - laranja claro
                     afternoon_start = pd.Timestamp(day.year, day.month, day.day, 12)
                     afternoon_end = pd.Timestamp(day.year, day.month, day.day, 18)
-                    ax.axvspan(afternoon_start, afternoon_end = pd.Timestamp(day.year, day.month, day.day, 18)
+                    ax.axvspan(afternoon_start, afternoon_end = pd.Timestamp(day.year, day.month, day.day, 18))
                     ax.axvspan(afternoon_start, afternoon_end, alpha=0.1, color='orange')
                     
                     # Noite (18-6h) - azul claro
