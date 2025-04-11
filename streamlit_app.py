@@ -26,8 +26,8 @@ st.set_page_config(layout="wide", page_title="Águas Guariroba - Visualizador de
 # ✅ Carregar autenticação a partir do secrets.toml
 try:
     # Corrigido URL e key para CDS API
-    cds_url = st.secrets.get("cds", {}).get("url", "https:///retrieve/v1/processes/reanalysis-era5-single-levels")
-    cds_key = st.secrets.get("cds", {}).get("key", "037c871b-81c7-43be-926c-283f17effd01")
+    cds_url = st.secrets.get("cds", {}).get("url", "")
+    cds_key = st.secrets.get("cds", {}).get("key", "")
     client = cdsapi.Client(url=cds_url, key=cds_key)
 except Exception as e:
     st.error(f"❌ Erro ao carregar as credenciais do CDS API: {str(e)}")
