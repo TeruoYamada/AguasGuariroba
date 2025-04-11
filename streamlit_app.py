@@ -112,17 +112,22 @@ def setup_sidebar():
 # --- FUNÇÕES PRINCIPAIS ---
 
 def download_era5_data(params, client):
+    """Baixa dados do ERA5 conforme parâmetros"""
     try:
-        filename = "era5_data.nc"
-        buffer = params['map_width'] * 2
+        filename = f"era5_data_{params['start_date']}_{params['end_date']}.nc"
+
+        # Definindo área com buffer para visualização do mapa
+        buffer = params['map_width'] * 2  # Buffer para mapa mais amplo
+
+        # Construindo datas de forma correta
         date_range = pd.date_range(params['start_date'], params['end_date'])
 
         request = {
             'product_type': params['product_type'],
             'variable': params['precip_var'],
-            'year': sorted({str(d.year) for d in date_range}),
-            'month': sorted({f"{d.month:02d}" for d in date_range}),
-            'day': sorted({f"{d.day:02d}" for d in date_range}),
+            'year': sorted(list(set([str(d.year) for d in date_range]))),
+            'month': sorted(list(set([f"{d.month:02d}" for d in date_range]))),
+            'day': sorted(list(set([f"{d.day:02d}" for d in date_range]))),
             'time': [f"{h:02d}:00" for h in range(params['start_hour'], params['end_hour']+1, 3)],
             'area': [
                 params['lat_center'] + buffer,
@@ -133,16 +138,16 @@ def download_era5_data(params, client):
             'format': 'netcdf'
         }
 
-        st.write("📦 Request enviado à API:", request)
-
         with st.spinner("Baixando dados do ERA5..."):
             client.retrieve('reanalysis-era5-single-levels', request, filename)
 
         return xr.open_dataset(filename)
 
     except Exception as e:
-        st.error(f"❌ Erro ao baixar dados: {str(e)}")
+        st.error(f"Erro ao baixar dados: {str(e)}")
+        logger.exception("Erro no download de dados")
         return None
+
 
 def process_precipitation_data(ds, params):
     """Processa os dados de precipitação"""
@@ -547,28 +552,19 @@ def main():
             ds = st.session_state['data']
             
             # Seletor de timestamp
-# Verificação da dimensão de tempo
-        time_dim = None
-        for dim in ds.dims:
-            if "time" in dim.lower():
-                time_dim = dim
-                break
-        
-        if not time_dim:
-            st.error("❌ O dataset baixado não contém dimensão de tempo ('time'). Verifique o período selecionado ou se os dados estão vazios.")
-            st.write("📦 Variáveis disponíveis:", list(ds.variables.keys()))
-            st.write("📏 Dimensões disponíveis:", list(ds.dims.keys()))
-            st.stop()
-        
-        # Seletor de timestamp com segurança
-        timestamps = [pd.to_datetime(t.values).strftime("%Y-%m-%d %H:%M") 
-                      for t in ds[time_dim][:min(20, len(ds[time_dim]))]]
-
+            timestamps = [pd.to_datetime(t.values).strftime("%Y-%m-%d %H:%M") 
+                         for t in ds.time[:min(20, len(ds.time))]]
             
-        col1, col2 = st.columns(2)
-        with col1:
-        # Toggle para animação
-            show_animation = st.toggle("Mostrar animação", value=False)
+            selected_time = st.selectbox(
+                "Selecione o horário para visualização:", 
+                range(len(timestamps)), 
+                format_func=lambda i: timestamps[i]
+            )
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                # Toggle para animação
+                show_animation = st.toggle("Mostrar animação", value=False)
             
             # Exibir mapa estático ou animação
             with st.spinner("Renderizando mapa..."):
@@ -590,8 +586,8 @@ def main():
                     # Mapa estático
                     fig = create_precipitation_map(ds, selected_time, params)
                     st.pyplot(fig)
-            else:
-                st.info("Clique em 'Atualizar Dados' para visualizar o mapa de precipitação.")
+        else:
+            st.info("Clique em 'Atualizar Dados' para visualizar o mapa de precipitação.")
     
     # Aba de Série Temporal
     with tab3:
