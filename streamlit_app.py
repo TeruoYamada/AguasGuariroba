@@ -579,8 +579,8 @@ def main():
                     # Mapa estático
                     fig = create_precipitation_map(ds, selected_time, params)
                     st.pyplot(fig)
-            else:
-            st.info("Clique em 'Atualizar Dados' para visualizar o mapa de precipitação.")
+                else:
+                    st.info("Clique em 'Atualizar Dados' para visualizar o mapa de precipitação.")
     
     # Aba de Série Temporal
     with tab3:
