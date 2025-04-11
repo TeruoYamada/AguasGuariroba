@@ -515,7 +515,7 @@ def main():
     with col2:
         if st.button("🔄 Atualizar Dados", type="primary", use_container_width=True):
             with st.spinner("Baixando e processando dados..."):
-                ds = download_era5_data(params, client)
+                ds = download_era5_data(params, client_cds)
                 
                 if ds is not None:
                     st.session_state['data'] = ds
