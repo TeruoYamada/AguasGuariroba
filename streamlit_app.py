@@ -21,7 +21,16 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Configuração da página
-st.set_page_config(layout="wide", page_title="Previsão de Precipitação - Campo Grande")
+st.set_page_config(layout="wide", page_title="Visualizador de AOD - MS")
+
+# ✅ Carregar autenticação a partir do secrets.toml
+try:
+    ads_url = st.secrets["ads"]["url"]
+    ads_key = st.secrets["ads"]["key"]
+    client = cdsapi.Client(url=ads_url, key=ads_key)
+except Exception as e:
+    st.error("❌ Erro ao carregar as credenciais do CDS API. Verifique seu secrets.toml.")
+    st.stop()
 
 # --- CONSTANTES E CONFIGURAÇÕES ---
 CAMPOS_GRANDE_AREAS = {
@@ -47,25 +56,6 @@ PRECIPITATION_VARIABLES = {
 COLORMAPS = ["Blues", "viridis", "plasma", "RdYlBu_r", "gist_earth"]
 
 # --- FUNÇÕES AUXILIARES ---
-def init_cds_client():
-    """Inicializa o cliente CDS API com credenciais do secrets.toml"""
-    try:
-        # Try accessing using both potential secret paths
-        if 'ads' in st.secrets:
-            url = st.secrets["ads"]["url"]
-            key = st.secrets["ads"]["key"]
-        elif 'cds' in st.secrets:
-            url = st.secrets.cds.url
-            key = st.secrets.cds.key
-        else:
-            st.error("Credenciais do CDS não encontradas no secrets.toml")
-            st.stop()
-            
-        return cdsapi.Client(url=url, key=key)
-    except Exception as e:
-        st.error(f"Erro ao inicializar cliente CDS: {str(e)}")
-        st.stop()
-
 def setup_sidebar():
     """Configura a barra lateral com parâmetros de entrada"""
     st.sidebar.header("⚙️ Configurações")
@@ -510,8 +500,7 @@ def main():
     st.title("🌧️ Monitoramento de Precipitação - Campo Grande")
     st.markdown("Análise de dados de precipitação usando ERA5 do Copernicus Climate Data Store")
     
-    # Inicialização
-    client = init_cds_client()
+    # Inicialização - usando o cliente já inicializado no início do script
     params = setup_sidebar()
     
     # Cache para dados
