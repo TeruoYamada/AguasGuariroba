@@ -565,10 +565,10 @@ def main():
                       for t in ds[time_dim][:min(20, len(ds[time_dim]))]]
 
             
-            col1, col2 = st.columns(2)
-            with col1:
-                # Toggle para animação
-                show_animation = st.toggle("Mostrar animação", value=False)
+        col1, col2 = st.columns(2)
+        with col1:
+        # Toggle para animação
+            show_animation = st.toggle("Mostrar animação", value=False)
             
             # Exibir mapa estático ou animação
             with st.spinner("Renderizando mapa..."):
