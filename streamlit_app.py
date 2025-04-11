@@ -547,13 +547,7 @@ def main():
             ds = st.session_state['data']
             
             # Seletor de timestamp
-        if 'time' not in ds.variables:
-            st.error("❌ O arquivo baixado não tem a variável 'time'. Verifique o período ou os parâmetros selecionados.")
-            st.stop()
-            else:
-                timestamps = [pd.to_datetime(t.values).strftime("%Y-%m-%d %H:%M") for t in ds.time[:min(20, len(ds.time))]]
-
-            
+        for t in ds.time[:min(20, len(ds.time))]
             selected_time = st.selectbox(
                 "Selecione o horário para visualização:", 
                 range(len(timestamps)), 
