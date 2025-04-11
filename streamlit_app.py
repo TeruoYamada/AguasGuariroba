@@ -547,7 +547,7 @@ def main():
             ds = st.session_state['data']
             
             # Seletor de timestamp
-        for t in ds.time[:min(20, len(ds.time))]
+        for t in ds.time[:min(20, len(ds.time))]:
             selected_time = st.selectbox(
                 "Selecione o horário para visualização:", 
                 range(len(timestamps)), 
