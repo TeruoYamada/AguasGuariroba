@@ -547,12 +547,23 @@ def main():
             ds = st.session_state['data']
             
             # Seletor de timestamp
-        for t in ds.time[:min(20, len(ds.time))]:
-            selected_time = st.selectbox(
-                "Selecione o horário para visualização:", 
-                range(len(timestamps)), 
-                format_func=lambda i: timestamps[i]
-            )
+# Verificação da dimensão de tempo
+        time_dim = None
+        for dim in ds.dims:
+            if "time" in dim.lower():
+                time_dim = dim
+                break
+        
+        if not time_dim:
+            st.error("❌ O dataset baixado não contém dimensão de tempo ('time'). Verifique o período selecionado ou se os dados estão vazios.")
+            st.write("📦 Variáveis disponíveis:", list(ds.variables.keys()))
+            st.write("📏 Dimensões disponíveis:", list(ds.dims.keys()))
+            st.stop()
+        
+        # Seletor de timestamp com segurança
+        timestamps = [pd.to_datetime(t.values).strftime("%Y-%m-%d %H:%M") 
+                      for t in ds[time_dim][:min(20, len(ds[time_dim]))]]
+
             
             col1, col2 = st.columns(2)
             with col1:
