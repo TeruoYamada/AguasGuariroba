@@ -7,4 +7,3 @@ streamlit
 pandas
 geopandas
 scikit-learn
-netcfd4
