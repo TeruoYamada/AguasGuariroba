@@ -27,8 +27,9 @@ st.set_page_config(layout="wide", page_title="Águas Guariroba - Visualizador de
 try:
     import cdsapi
 
+    # Utiliza URL padrão recomendada pela API
     client_cds = cdsapi.Client(
-        url=st.secrets["cds"]["url"],
+        url="https://cds.climate.copernicus.eu/api/v2",
         key=st.secrets["cds"]["key"]
     )
 
