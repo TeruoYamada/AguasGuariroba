@@ -25,11 +25,12 @@ st.set_page_config(layout="wide", page_title="Visualizador de AOD - MS")
 
 # ✅ Carregar autenticação a partir do secrets.toml
 try:
-    ads_url = st.secrets["ads"]["url"]
-    ads_key = st.secrets["ads"]["key"]
-    client = cdsapi.Client(url=ads_url, key=ads_key)
+    # Corrigido URL e key para CDS API
+    cds_url = st.secrets.get("cds", {}).get("url", "")
+    cds_key = st.secrets.get("cds", {}).get("key", "")
+    client = cdsapi.Client(url=cds_url, key=cds_key)
 except Exception as e:
-    st.error("❌ Erro ao carregar as credenciais do CDS API. Verifique seu secrets.toml.")
+    st.error(f"❌ Erro ao carregar as credenciais do CDS API: {str(e)}")
     st.stop()
 
 # --- CONSTANTES E CONFIGURAÇÕES ---
