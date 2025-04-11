@@ -134,7 +134,7 @@ def download_era5_data(params, client):
         }
         
         with st.spinner("Baixando dados do ERA5..."):
-            client_cds.retrieve('reanalysis-era5-single-levels', params, 'era5_data.nc')
+            client_cds.resources('reanalysis-era5-single-levels', params, 'era5_data.nc')
         
         return xr.open_dataset(filename)
     
