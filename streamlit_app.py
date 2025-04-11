@@ -21,7 +21,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Configuração da página
-st.set_page_config(layout="wide", page_title="Visualizador de AOD - MS")
+st.set_page_config(layout="wide", page_title="Águas Guariroba - Visualizador de Precipitação - MS")
 
 # ✅ Carregar autenticação a partir do secrets.toml
 try:
