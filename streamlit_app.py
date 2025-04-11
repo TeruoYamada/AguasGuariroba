@@ -29,7 +29,7 @@ try:
 
     # Utiliza URL padrão recomendada pela API
     client_cds = cdsapi.Client(
-        url="https://cds.climate.copernicus.eu/api/v2",
+        url="https://cds.climate.copernicus.eu/api",
         key=st.secrets["cds"]["key"]
     )
 
