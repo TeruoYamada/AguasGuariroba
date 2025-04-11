@@ -23,14 +23,17 @@ logger = logging.getLogger(__name__)
 # Configuração da página
 st.set_page_config(layout="wide", page_title="Águas Guariroba - Visualizador de Precipitação - MS")
 
-# ✅ Carregar autenticação a partir do secrets.toml
+# ✅ Autenticação CDS (ERA5)
 try:
-    # Corrigido URL e key para CDS API
-    cds_url = st.secrets.get("cds", {}).get("url", "")
-    cds_key = st.secrets.get("cds", {}).get("key", "")
-    client_cds = cdsapi.Client(url=cds_url, key=cds_key)
+    import cdsapi
+
+    client_cds = cdsapi.Client(
+        url=st.secrets["cds"]["url"],
+        key=st.secrets["cds"]["key"]
+    )
+
 except Exception as e:
-    st.error(f"❌ Erro ao carregar as credenciais do CDS API: {str(e)}")
+    st.error(f"❌ Erro ao conectar ao Climate Data Store: {str(e)}")
     st.stop()
 
 # --- CONSTANTES E CONFIGURAÇÕES ---
