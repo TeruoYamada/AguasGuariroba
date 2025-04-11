@@ -28,7 +28,7 @@ try:
     # Corrigido URL e key para CDS API
     cds_url = st.secrets.get("cds", {}).get("url", "")
     cds_key = st.secrets.get("cds", {}).get("key", "")
-    client = cdsapi.Client(url=cds_url, key=cds_key)
+    client_cds = cdsapi.Client(url=cds_url, key=cds_key)
 except Exception as e:
     st.error(f"❌ Erro ao carregar as credenciais do CDS API: {str(e)}")
     st.stop()
