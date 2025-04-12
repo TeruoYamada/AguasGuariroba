@@ -113,122 +113,134 @@ def setup_sidebar():
 
 
 def download_era5_data(params, client):
-    """Baixa dados do ERA5 conforme parâmetros"""
+    """Baixa e processa dados do ERA5 garantindo a dimensão temporal"""
     try:
-        # Verificar se as datas são válidas
+        # Validação das datas
         if params['start_date'] > params['end_date']:
-            st.error("❌ Data de início maior que data de fim")
+            st.error("❌ Data de início deve ser anterior à data final")
             return None
 
-        # Nome do arquivo de saída
         filename = f"era5_data_{params['start_date']}_{params['end_date']}.nc"
-
-        # Definir área de interesse (Campo Grande e arredores)
+        
+        # Área de interesse (Campo Grande)
         area = [
             params['lat_center'] + 0.15,  # Norte
-            params['lon_center'] - 0.15,   # Oeste
-            params['lat_center'] - 0.15,   # Sul
-            params['lon_center'] + 0.15    # Leste
+            params['lon_center'] - 0.15,  # Oeste
+            params['lat_center'] - 0.15,  # Sul
+            params['lon_center'] + 0.15   # Leste
         ]
 
-        # Gerar lista de datas no formato YYYY-MM-DD
-        date_range = pd.date_range(
-            start=params['start_date'],
-            end=params['end_date'],
-            freq='D'
-        )
-        
-        # Gerar lista de horários no formato "HH:MM"
-        time_list = [f"{h:02d}:00" for h in range(params['start_hour'], params['end_hour'] + 1, 3)]
-        if not time_list:
-            st.error("❌ Intervalo de horas inválido")
-            return None
+        # Preparar datas e horas
+        date_range = pd.date_range(params['start_date'], params['end_date'])
+        time_list = [f"{h:02d}:00" for h in range(0, 24, 3)]  # Horários padrão ERA5
 
-        # Construir a requisição
+        # Construir requisição
         request = {
             'product_type': params['product_type'],
             'variable': params['precip_var'],
-            'year': [str(d.year) for d in date_range],
-            'month': [f"{d.month:02d}" for d in date_range],
-            'day': [f"{d.day:02d}" for d in date_range],
+            'year': sorted(list({str(d.year) for d in date_range})),
+            'month': sorted(list({f"{d.month:02d}" for d in date_range})),
+            'day': sorted(list({f"{d.day:02d}" for d in date_range})),
             'time': time_list,
             'area': area,
             'format': 'netcdf'
         }
 
-        # Remover duplicatas (caso existam)
-        for time_param in ['year', 'month', 'day']:
-            request[time_param] = sorted(list(set(request[time_param])))
-
-        st.info("📦 Enviando requisição ao CDS...")
-
-        # Fazer o download dos dados
-        with st.spinner("Baixando dados do ERA5 (isso pode levar alguns minutos)..."):
+        # Download dos dados
+        with st.spinner("⌛ Baixando dados do ERA5 (pode levar alguns minutos)..."):
             client.retrieve('reanalysis-era5-single-levels', request, filename)
 
-        # Verificar se o arquivo foi baixado corretamente
-        if not os.path.exists(filename) or os.path.getsize(filename) < 1000:
-            st.error("❌ Falha no download - arquivo ausente ou corrompido")
-            return None
-
-        # Abrir o arquivo NetCDF
-        try:
-            ds = xr.open_dataset(filename)
+        # Processar arquivo NetCDF
+        with xr.open_dataset(filename) as ds:
+            # Verificar e padronizar dimensão temporal
+            time_dims = [dim for dim in ds.dims if 'time' in dim.lower()]
+            if not time_dims:
+                st.error("❌ Nenhuma dimensão temporal encontrada nos dados")
+                return None
+                
+            # Renomear para 'time' se necessário
+            if time_dims[0] != 'time':
+                ds = ds.rename({time_dims[0]: 'time'})
             
-            # Verificar se temos a dimensão temporal
-            if 'time' not in ds.dims:
-                st.error("❌ Dados não contêm dimensão temporal")
-                return None
-                
-            # Verificar se temos dados temporais válidos
-            if len(ds.time) == 0:
-                st.error("❌ Nenhum dado temporal encontrado")
-                return None
-                
-            # Converter unidades se necessário (m para mm)
-            if params['precip_var'] in ['total_precipitation', 'convective_precipitation', 'large_scale_precipitation']:
+            # Converter para datetime64
+            ds['time'] = pd.to_datetime(ds.time.values)
+            
+            # Converter unidades (m para mm)
+            if params['precip_var'] in PRECIPITATION_VARIABLES:
                 ds[params['precip_var']] = ds[params['precip_var']] * 1000
                 ds[params['precip_var']].attrs['units'] = 'mm'
-
-            return ds
-
-        except Exception as e:
-            st.error(f"❌ Erro ao processar arquivo NetCDF: {str(e)}")
-            return None
+            
+            # Salvar modificações
+            ds.to_netcdf(filename)
+            
+        return xr.open_dataset(filename)
 
     except Exception as e:
-        st.error(f"❌ Erro no download de dados: {str(e)}")
-        logger.exception("Erro no download de dados")
+        st.error(f"❌ Erro crítico: {str(e)}")
+        logger.exception("Falha no download/processamento")
         return None
 
 
 def process_precipitation_data(ds, params):
-    """Processa os dados de precipitação"""
+    """Processa os dados de precipitação com verificação robusta"""
     try:
-        # Extrai série temporal para o ponto central
+        # Função auxiliar para extrair dados de ponto
         def extract_point_data(ds, lat, lon):
-            lat_idx = np.abs(ds.latitude - lat).argmin().item()
-            lon_idx = np.abs(ds.longitude - lon).argmin().item()
-            time_dim = next((dim for dim in ['time', 'forecast_time'] if dim in ds.dims), None)
-            
-            if not time_dim:
+            try:
+                # Encontrar índices mais próximos
+                lat_idx = np.abs(ds.latitude - lat).argmin().item()
+                lon_idx = np.abs(ds.longitude - lon).argmin().item()
+                
+                # Extrair dados
+                point_data = ds[params['precip_var']].isel(
+                    latitude=lat_idx,
+                    longitude=lon_idx
+                )
+                
+                # Converter para DataFrame
+                df = point_data.to_dataframe().reset_index()
+                
+                # Renomear coluna temporal
+                time_col = [col for col in df.columns if 'time' in col.lower()][0]
+                df = df.rename(columns={
+                    params['precip_var']: 'precipitation',
+                    time_col: 'time'
+                })
+                
+                return df
+                
+            except Exception as e:
+                logger.warning(f"Erro ao extrair dados: {str(e)}")
                 return pd.DataFrame()
-            
-            data = ds[params['precip_var']].isel(
-                latitude=lat_idx, 
-                longitude=lon_idx
-            ).to_dataframe().reset_index()
-            
-            # Converter m para mm se necessário
-            if params['precip_var'] in PRECIPITATION_VARIABLES:
-                data[params['precip_var']] *= 1000
-            
-            return data.rename(columns={params['precip_var']: 'precipitation', time_dim: 'time'})
         
+        # Processar ponto central
         df = extract_point_data(ds, params['lat_center'], params['lon_center'])
-        
         if df.empty:
             return None
+            
+        # Processar outras regiões
+        all_regions = {}
+        for region, (lat, lon) in CAMPOS_GRANDE_AREAS.items():
+            region_df = extract_point_data(ds, lat, lon)
+            if not region_df.empty:
+                all_regions[region] = region_df
+        
+        # Calcular totais diários
+        df['date'] = df['time'].dt.date
+        daily = df.groupby('date')['precipitation'].sum().reset_index()
+        
+        return {
+            'dataset': ds,
+            'timeseries': df,
+            'daily': daily,
+            'forecast': generate_forecast(df),
+            'all_regions': all_regions
+        }
+        
+    except Exception as e:
+        st.error(f"❌ Falha no processamento: {str(e)}")
+        logger.exception("Erro no processamento")
+        return None
             
         # Calcula estatísticas diárias
         df['date'] = df['time'].dt.date
