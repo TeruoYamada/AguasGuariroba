@@ -9,9 +9,9 @@ geopandas
 scikit-learn
 h5netcdf
 netCDF4
-matplotlib-inline
 pillow
 datetime
 date
 cartopy
 tempfile
+scipy
