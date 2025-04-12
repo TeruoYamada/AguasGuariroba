@@ -115,7 +115,7 @@ def setup_sidebar():
 def download_era5_data(params, client):
     """Baixa dados do ERA5 conforme parâmetros"""
     try:
-        filename = f"era5_data_{params['start_date']}_{params['end_date']}.grib"
+        filename = f"era5_data_{params['start_date']}_{params['end_date']}.nc"
 
         buffer = params['map_width']
         date_range = pd.date_range(params['start_date'], params['end_date'])
@@ -141,7 +141,7 @@ def download_era5_data(params, client):
             'day': sorted(list(set([f"{d.day:02d}" for d in date_range]))),
             'time': time_list,
             'area': area,
-            'format': 'grib'
+            'format': 'netcdf'
         }
 
         st.write("📦 Requisição enviada:", request)
@@ -153,7 +153,7 @@ def download_era5_data(params, client):
             st.error("❌ O arquivo baixado está ausente ou corrompido.")
             return None
 
-        ds = xr.open_dataset(filename, engine="cfgrib")
+        ds = xr.open_dataset(filename)  # Usa engine netcdf padrão
         if 'time' not in ds.dims or len(ds.time) == 0:
             st.error("❌ Os dados baixados não contêm informações temporais válidas.")
             return None
@@ -164,7 +164,6 @@ def download_era5_data(params, client):
         st.error(f"Erro ao baixar dados: {str(e)}")
         logger.exception("Erro no download de dados")
         return None
-
 
 
 def process_precipitation_data(ds, params):
