@@ -111,44 +111,51 @@ def setup_sidebar():
 
 # --- FUNÇÕES PRINCIPAIS ---
 
+
 def download_era5_data(params, client):
     """Baixa dados do ERA5 conforme parâmetros"""
     try:
         filename = f"era5_data_{params['start_date']}_{params['end_date']}.nc"
 
-        # Definindo área com buffer para visualização do mapa
-        buffer = params['map_width']  # Buffer para mapa mais amplo
-
-        # Construindo datas de forma correta
+        buffer = params['map_width']
         date_range = pd.date_range(params['start_date'], params['end_date'])
 
-        # Define uma área específica para Campo Grande
-        # Coordenadas aproximadas para cobrir todos os setores da cidade
         area = [
-            -20.35,  # Latitude Norte 
-            -54.75,  # Longitude Oeste
-            -20.60,  # Latitude Sul
-            -54.50   # Longitude Leste
+            -20.35,
+            -54.75,
+            -20.60,
+            -54.50
         ]
 
+        # Gerar lista de horários
+        time_list = [f"{h:02d}:00" for h in range(params['start_hour'], params['end_hour']+1, 3)]
+        if not time_list:
+            st.error("❌ Lista de horários está vazia. Verifique a hora inicial/final selecionada.")
+            return None
+
         request = {
-            'product_type': params['product_type'],
+            'product_type': 'reanalysis',  # Forçado para evitar problemas com ensemble_mean
             'variable': params['precip_var'],
             'year': sorted(list(set([str(d.year) for d in date_range]))),
             'month': sorted(list(set([f"{d.month:02d}" for d in date_range]))),
             'day': sorted(list(set([f"{d.day:02d}" for d in date_range]))),
-            'time': [f"{h:02d}:00" for h in range(params['start_hour'], params['end_hour']+1, 3)],
+            'time': time_list,
             'area': area,
             'format': 'netcdf'
         }
 
+        st.write("📦 Requisição enviada:", request)
+
         with st.spinner("Baixando dados do ERA5..."):
             client.retrieve('reanalysis-era5-single-levels', request, filename)
 
-        # Validar que os dados possuem dimensão temporal
+        if not os.path.exists(filename) or os.path.getsize(filename) < 1000:
+            st.error("❌ O arquivo baixado está ausente ou corrompido.")
+            return None
+
         ds = xr.open_dataset(filename)
         if 'time' not in ds.dims or len(ds.time) == 0:
-            st.error("Os dados baixados não contêm informações temporais válidas.")
+            st.error("❌ Os dados baixados não contêm informações temporais válidas.")
             return None
 
         return ds
@@ -157,6 +164,7 @@ def download_era5_data(params, client):
         st.error(f"Erro ao baixar dados: {str(e)}")
         logger.exception("Erro no download de dados")
         return None
+
 
 
 def process_precipitation_data(ds, params):
