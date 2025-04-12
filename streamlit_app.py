@@ -747,3 +747,6 @@ def create_precip_map(ds, params, timestamp=None):
     except Exception as e:
         logger.exception(f"Erro ao criar mapa: {e}")
         return plt.figure()
+
+if __name__ == "__main__":
+    main()
