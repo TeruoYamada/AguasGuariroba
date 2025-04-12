@@ -10,3 +10,4 @@ h5netcdf
 netCDF4
 matplotlib-inline
 pillow
+tempfile
