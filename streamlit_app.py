@@ -27,6 +27,8 @@ from PIL import Image
 import base64
 from io import BytesIO
 from scipy import stats
+import requests
+import cartopy.io.img_tiles as cimgt
 
 # Configuração inicial
 logging.basicConfig(level=logging.INFO)
@@ -88,6 +90,43 @@ CAMPO_GRANDE_BOUNDS = {
     'west': -54.75
 }
 
+# Coordenadas da área urbana de Campo Grande
+CAMPO_GRANDE_SHAPE = {
+    'bounding_box': {
+        'north': -20.35,
+        'south': -20.60,
+        'east': -54.50,
+        'west': -54.75
+    }
+}
+
+# Shapefile de Campo Grande (definido inline para evitar dependências de arquivo)
+@st.cache_data
+def get_campo_grande_shapefile():
+    # URL do shapefile de Campo Grande ou gerar um aproximado
+    try:
+        # Tentar carregar o shapefile do Github ou outra fonte
+        url = "https://raw.githubusercontent.com/CampoGrandeData/GIS/main/campo_grande_urban_area.geojson"
+        campo_grande_gdf = gpd.read_file(url)
+        return campo_grande_gdf
+    except Exception as e:
+        logger.warning(f"Erro ao carregar shapefile externo: {str(e)}")
+        
+        # Criar um polígono simples baseado no bounding box como alternativa
+        from shapely.geometry import Polygon
+        
+        bbox = CAMPO_GRANDE_BOUNDS
+        polygon = Polygon([
+            (bbox['west'], bbox['north']),
+            (bbox['east'], bbox['north']),
+            (bbox['east'], bbox['south']),
+            (bbox['west'], bbox['south'])
+        ])
+        
+        # Criar GeoDataFrame
+        gdf = gpd.GeoDataFrame(geometry=[polygon], crs="EPSG:4326")
+        return gdf
+
 # --- FUNÇÕES AUXILIARES ---
 def setup_sidebar():
     """Configura a barra lateral com parâmetros de entrada"""
@@ -126,6 +165,8 @@ def setup_sidebar():
         product_type = st.radio("Tipo de Produto", ["reanalysis", "ensemble_mean"])
         ml_model = st.selectbox("Modelo de Previsão", ["RandomForest", "GradientBoosting", "LinearRegression"])
         probability_threshold = st.slider("Limiar de Probabilidade (%)", 0, 100, 30)
+        show_shapefile = st.checkbox("Mostrar Área Urbana", value=True)
+        satellite_background = st.checkbox("Usar Imagem de Satélite", value=True)
     
     return {
         'area': area,
@@ -142,7 +183,9 @@ def setup_sidebar():
         'product_type': product_type,
         'forecast_days': forecast_days,
         'ml_model': ml_model,
-        'probability_threshold': probability_threshold
+        'probability_threshold': probability_threshold,
+        'show_shapefile': show_shapefile,
+        'satellite_background': satellite_background
     }
 
 def download_era5_data(params, client):
@@ -560,7 +603,18 @@ def generate_probability_map(ds, params):
         
         # Criar figura
         fig = plt.figure(figsize=(10, 8))
-        ax = plt.axes(projection=ccrs.PlateCarree())
+        
+        # Configurar mapa base
+        if params['satellite_background']:
+            # Usar imagem de satélite como base
+            ax = plt.axes(projection=ccrs.PlateCarree())
+            imagery = cimgt.GoogleTiles(style='satellite')
+            ax.add_image(imagery, 8)  # Zoom level
+        else:
+            ax = plt.axes(projection=ccrs.PlateCarree())
+            ax.add_feature(cfeature.COASTLINE)
+            ax.add_feature(cfeature.BORDERS, linestyle=':')
+            ax.add_feature(cfeature.STATES, linestyle=':')
         
         # Configurar limites do mapa
         lat_center, lon_center = params['lat_center'], params['lon_center']
@@ -570,17 +624,13 @@ def generate_probability_map(ds, params):
             lat_center - map_width, lat_center + map_width
         ])
         
-        # Adicionar características do mapa
-        ax.add_feature(cfeature.COASTLINE)
-        ax.add_feature(cfeature.BORDERS, linestyle=':')
-        ax.add_feature(cfeature.STATES, linestyle=':')
-        
         # Plotar probabilidade
         img = ax.pcolormesh(
             ds.longitude, ds.latitude, prob,
             transform=ccrs.PlateCarree(),
             cmap='YlGnBu',
-            vmin=0, vmax=100
+            vmin=0, vmax=100,
+            alpha=0.7  # Transparência para ver imagem de fundo
         )
         
         # Adicionar contorno para áreas com probabilidade acima do limiar
@@ -590,6 +640,17 @@ def generate_probability_map(ds, params):
             colors='red', linewidths=1
         )
         
+        # Adicionar shapefile da área urbana se solicitado
+        if params['show_shapefile']:
+            campo_grande_gdf = get_campo_grande_shapefile()
+            campo_grande_gdf.plot(
+                ax=ax,
+                edgecolor='black',
+                facecolor='none',
+                linewidth=1.5,
+                transform=ccrs.PlateCarree()
+            )
+        
         # Adicionar colorbar
         cbar = plt.colorbar(img, ax=ax, pad=0.05)
         cbar.set_label('Probabilidade de Chuva (%)')
@@ -598,7 +659,8 @@ def generate_probability_map(ds, params):
         for region, (lat, lon) in CAMPOS_GRANDE_AREAS.items():
             ax.plot(lon, lat, 'ro', markersize=4)
             ax.text(lon + 0.01, lat + 0.01, region, fontsize=8,
-                   transform=ccrs.PlateCarree())
+                   transform=ccrs.PlateCarree(), fontweight='bold', color='white',
+                   path_effects=[withStroke(linewidth=2, foreground='black')])
         
         plt.title(f"Probabilidade de Precipitação > {threshold}mm")
         plt.tight_layout()
@@ -609,16 +671,34 @@ def generate_probability_map(ds, params):
         logger.exception(f"Erro ao gerar mapa de probabilidade: {e}")
         return plt.figure()
 
-def create_precipitation_map(ds, time_idx, params):
-    """Cria mapa de precipitação para um horário específico"""
+# Função para adicionar contorno ao texto para melhor visibilidade sobre fundo de satélite
+from matplotlib.patheffects import withStroke
+
+def create_precip_map(ds, params, timestamp=None):
+    """Cria mapa de precipitação para um timestamp específico ou média total"""
     try:
-        fig = plt.figure(figsize=(10, 8))
-        ax = plt.axes(projection=ccrs.PlateCarree())
+        # Selecionar dados para o timestamp específico ou usar média
+        if timestamp is not None:
+            time_index = np.abs(ds.time.values - np.datetime64(timestamp)).argmin()
+            data = ds[params['precip_var']].isel(time=time_index)
+            title = f"Precipitação ({params['precip_var']}) - {pd.to_datetime(timestamp).strftime('%d/%m/%Y %H:%M')}"
+        else:
+            data = ds[params['precip_var']].mean(dim='time')
+            title = f"Precipitação Média ({params['precip_var']})"
         
-        # Adicionar características do mapa
-        ax.add_feature(cfeature.COASTLINE)
-        ax.add_feature(cfeature.BORDERS, linestyle=':')
-        ax.add_feature(cfeature.STATES, linestyle=':')
+        # Criar figura
+        fig = plt.figure(figsize=(10, 8))
+        
+        # Configurar mapa base
+        if params['satellite_background']:
+            ax = plt.axes(projection=ccrs.PlateCarree())
+            imagery = cimgt.GoogleTiles(style='satellite')
+            ax.add_image(imagery, 8)
+        else:
+            ax = plt.axes(projection=ccrs.PlateCarree())
+            ax.add_feature(cfeature.COASTLINE)
+            ax.add_feature(cfeature.BORDERS, linestyle=':')
+            ax.add_feature(cfeature.STATES, linestyle=':')
         
         # Configurar limites do mapa
         lat_center, lon_center = params['lat_center'], params['lon_center']
@@ -628,445 +708,42 @@ def create_precipitation_map(ds, time_idx, params):
             lat_center - map_width, lat_center + map_width
         ])
         
-        # Plotar dados de precipitação
-        precip = ds[params['precip_var']].isel(time=time_idx)
-        max_val = np.percentile(precip.values, 95) if not np.all(precip.values == 0) else 1
-        
+        # Plotar dados
         img = ax.pcolormesh(
-            ds.longitude, ds.latitude, precip,
+            ds.longitude, ds.latitude, data,
             transform=ccrs.PlateCarree(),
             cmap=params['colormap'],
-            vmin=0, vmax=max_val
+            vmin=0, vmax=data.max().item() * 1.1 or 10,
+            alpha=0.7
         )
+        
+        # Adicionar shapefile da área urbana se solicitado
+        if params['show_shapefile']:
+            campo_grande_gdf = get_campo_grande_shapefile()
+            campo_grande_gdf.plot(
+                ax=ax,
+                edgecolor='black',
+                facecolor='none',
+                linewidth=1.5,
+                transform=ccrs.PlateCarree()
+            )
         
         # Adicionar colorbar
         cbar = plt.colorbar(img, ax=ax, pad=0.05)
-        cbar.set_label(PRECIPITATION_VARIABLES[params['precip_var']])
-        
-        # Adicionar título
-        time_str = pd.to_datetime(ds.time[time_idx].values).strftime('%Y-%m-%d %H:%M')
-        plt.title(f"{PRECIPITATION_VARIABLES[params['precip_var']]} - {time_str}")
+        cbar.set_label('Precipitação (mm)')
         
         # Adicionar pontos das regiões de interesse
         for region, (lat, lon) in CAMPOS_GRANDE_AREAS.items():
             ax.plot(lon, lat, 'ro', markersize=4)
             ax.text(lon + 0.01, lat + 0.01, region, fontsize=8,
-                   transform=ccrs.PlateCarree())
+                   transform=ccrs.PlateCarree(), fontweight='bold', color='white',
+                   path_effects=[withStroke(linewidth=2, foreground='black')])
         
+        plt.title(title)
         plt.tight_layout()
+        
         return fig
         
     except Exception as e:
         logger.exception(f"Erro ao criar mapa: {e}")
-        st.error(f"Erro ao criar mapa: {str(e)}")
         return plt.figure()
-
-def create_map_animation(ds, params):
-    """Cria animação do mapa de precipitação"""
-    try:
-        fig = plt.figure(figsize=(10, 8))
-        ax = plt.axes(projection=ccrs.PlateCarree())
-        
-        # Configurar limites do mapa
-        lat_center, lon_center = params['lat_center'], params['lon_center']
-        map_width = params['map_width']
-        ax.set_extent([
-            lon_center - map_width, lon_center + map_width,
-            lat_center - map_width, lat_center + map_width
-        ])
-        
-        # Adicionar características do mapa
-        ax.add_feature(cfeature.COASTLINE)
-        ax.add_feature(cfeature.BORDERS, linestyle=':')
-        ax.add_feature(cfeature.STATES, linestyle=':')
-        
-        # Determinar valores max/min para colorbar consistente
-        max_val = np.percentile(ds[params['precip_var']].values, 95)
-        if np.isnan(max_val) or max_val == 0:
-            max_val = 1
-        
-        # Função de atualização para animação
-        def update(frame):
-            ax.clear()
-            ax.add_feature(cfeature.COASTLINE)
-            ax.add_feature(cfeature.BORDERS, linestyle=':')
-            ax.add_feature(cfeature.STATES, linestyle=':')
-            ax.set_extent([
-                lon_center - map_width, lon_center + map_width,
-                lat_center - map_width, lat_center + map_width
-            ])
-            
-            # Plotar dados
-            precip = ds[params['precip_var']].isel(time=frame)
-            img = ax.pcolormesh(
-                ds.longitude, ds.latitude, precip,
-                transform=ccrs.PlateCarree(),
-                cmap=params['colormap'],
-                vmin=0, vmax=max_val
-            )
-            
-            # Adicionar título com timestamp
-            time_str = pd.to_datetime(ds.time[frame].values).strftime('%Y-%m-%d %H:%M')
-            ax.set_title(f"{PRECIPITATION_VARIABLES[params['precip_var']]} - {time_str}")
-            
-            # Adicionar pontos das regiões
-            for region, (lat, lon) in CAMPOS_GRANDE_AREAS.items():
-                ax.plot(lon, lat, 'ro', markersize=4)
-                ax.text(lon + 0.01, lat + 0.01, region, fontsize=8,
-                      transform=ccrs.PlateCarree())
-            
-            return [img]
-        
-        # Criar animação
-        frames = min(20, len(ds.time))  # Limitar a 20 frames para performance
-        ani = FuncAnimation(
-            fig, update, frames=frames, 
-            blit=False, interval=params['animation_speed']
-        )
-        
-        plt.close()  # Evitar exibição duplicada
-        return ani
-        
-    except Exception as e:
-        logger.exception(f"Erro na animação: {e}")
-        st.error(f"Erro ao criar animação: {str(e)}")
-        return None
-
-def render_time_series(results, params):
-    """Renderiza gráfico de série temporal"""
-    fig, ax = plt.subplots(figsize=(12, 6))
-    
-    # Plotar dados históricos
-    df = results['timeseries']
-    ax.bar(df['time'], df['precipitation'], width=0.02, color='blue', alpha=0.7, label='Observado')
-    
-    # Plotar previsão se disponível
-    if not results['forecast'].empty:
-        forecast = results['forecast']
-        ax.bar(forecast['date'], forecast['precipitation'], width=0.8, 
-               color='orange', alpha=0.5, label='Previsão')
-    
-    # Configurar eixos e título
-    ax.set_xlabel('Data e Hora')
-    ax.set_ylabel('Precipitação (mm)')
-    ax.set_title(f"Série Temporal de Precipitação - {params['area']}")
-    ax.legend()
-    
-    # Formatar eixo x para datas
-    ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d %H:%M'))
-    fig.autofmt_xdate()
-    
-    return fig
-
-def render_comparison_chart(results):
-    """Renderiza gráfico de comparação entre regiões"""
-    if not results.get('all_regions'):
-        return None
-    
-    fig, ax = plt.subplots(figsize=(12, 6))
-    
-    for region, df in results['all_regions'].items():
-        daily = df.groupby(df['time'].dt.date)['precipitation'].sum()
-        ax.plot(daily.index, daily.values, label=region)
-    
-    ax.set_xlabel('Data')
-    ax.set_ylabel('Precipitação Acumulada (mm)')
-    ax.set_title('Comparação de Precipitação entre Regiões')
-    ax.legend()
-    fig.autofmt_xdate()
-    
-    return fig
-
-def show_analysis_results(results, params):
-    """Mostra os resultados da análise"""
-    if not results:
-        st.warning("Nenhum resultado disponível para exibição")
-        return
-    
-    # Resumo estatístico
-    st.subheader("📊 Resumo Estatístico")
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        total_precip = results['daily']['precipitation'].sum()
-        st.metric("Precipitação Total", f"{total_precip:.1f} mm")
-    
-    with col2:
-        max_daily = results['daily']['precipitation'].max()
-        st.metric("Máximo Diário", f"{max_daily:.1f} mm")
-    
-    with col3:
-        rain_days = (results['daily']['precipitation'] > 0.1).sum()
-        st.metric("Dias com Chuva", f"{rain_days} dias")
-    
-    # Previsões
-    st.subheader("🔮 Previsões")
-    if not results['forecast'].empty:
-        forecast = results['forecast']
-        cols = st.columns(len(forecast))
-        for i, (_, row) in enumerate(forecast.iterrows()):
-            with cols[i]:
-                date_str = row['date'].strftime('%d/%m')
-                st.metric(
-                    date_str, 
-                    f"{row['precipitation']:.1f} mm", 
-                    delta=None
-                )
-        
-        # Gráfico de previsão
-        st.subheader("📈 Previsão para os Próximos Dias")
-        fig, ax = plt.subplots(figsize=(12, 6))
-        ax.bar(forecast['date'], forecast['precipitation'], color='orange', alpha=0.7)
-        ax.set_title(f"Previsão de Precipitação - {params['area']}")
-        ax.set_xlabel("Data")
-        ax.set_ylabel("Precipitação (mm)")
-        fig.autofmt_xdate()
-        st.pyplot(fig)
-    else:
-        st.info("Dados históricos insuficientes para gerar previsão")
-    
-    # ML Forecast por região
-    st.subheader("🧠 Previsão por Modelo de Machine Learning")
-    if results['ml_forecast']:
-        # Criar um gráfico comparativo das previsões
-        fig, ax = plt.subplots(figsize=(12, 6))
-        
-        for region, forecast_df in results['ml_forecast'].items():
-            ax.plot(forecast_df['date'], forecast_df['precipitation'], 
-                   marker='o', label=region)
-        
-        ax.set_xlabel("Data")
-        ax.set_ylabel("Precipitação Prevista (mm)")
-        ax.set_title(f"Previsão por {params['ml_model']} - Todas as Regiões")
-        ax.legend()
-        fig.autofmt_xdate()
-        st.pyplot(fig)
-        
-        # Tabela de dados
-        st.subheader("📋 Tabela de Previsões")
-        forecast_summary = pd.DataFrame()
-        
-        for region, df in results['ml_forecast'].items():
-            if forecast_summary.empty:
-                forecast_summary = pd.DataFrame({'date': df['date']})
-            forecast_summary[region] = df['precipitation'].round(1)
-        
-        forecast_summary = forecast_summary.set_index('date')
-        st.dataframe(forecast_summary)
-    else:
-        st.info("Dados insuficientes para gerar previsão por ML")
-    
-    # Mapa de probabilidade
-    st.subheader("🌧️ Mapa de Probabilidade de Precipitação")
-    if 'probability_map' in results:
-        st.pyplot(results['probability_map'])
-    
-    # Série temporal
-    st.subheader("⏱️ Série Temporal")
-    st.pyplot(render_time_series(results, params))
-    
-    # Comparação entre regiões
-    st.subheader("🔄 Comparação entre Regiões")
-    comparison_chart = render_comparison_chart(results)
-    if comparison_chart:
-        st.pyplot(comparison_chart)
-    
-    # Mapa de precipitação
-    st.subheader("🗺️ Mapa de Precipitação")
-    
-    # Seletor de tempo
-    times = pd.to_datetime(results['dataset'].time.values)
-    time_options = [t.strftime('%Y-%m-%d %H:%M') for t in times]
-    selected_time = st.selectbox("Selecione o horário", time_options)
-    selected_idx = time_options.index(selected_time)
-    
-    # Mostrar mapa para o horário selecionado
-    st.pyplot(create_precipitation_map(results['dataset'], selected_idx, params))
-    
-    # Animação
-    st.subheader("🎬 Animação")
-    ani = create_map_animation(results['dataset'], params)
-    if ani:
-        # Salvar animação como gif e exibir
-        with tempfile.NamedTemporaryFile(suffix='.gif', delete=False) as temp_file:
-            ani_filename = temp_file.name
-        
-        ani.save(ani_filename, writer='pillow', fps=2)
-        
-        # Exibir animação
-        file_ = open(ani_filename, "rb")
-        contents = file_.read()
-        data_url = base64.b64encode(contents).decode("utf-8")
-        file_.close()
-        
-        st.markdown(
-            f'<img src="data:image/gif;base64,{data_url}" alt="animação de precipitação">',
-            unsafe_allow_html=True,
-        )
-        
-        try:
-            os.remove(ani_filename)
-        except:
-            pass
-    else:
-        st.warning("Não foi possível criar a animação")
-
-def show_region_analysis(results, params):
-    """Mostra análise detalhada por região"""
-    if not results or not results.get('all_regions'):
-        st.warning("Dados por região não disponíveis")
-        return
-    
-    # Selecionar região
-    regions = list(results['all_regions'].keys())
-    selected_region = st.selectbox("Selecione a região para análise detalhada", regions)
-    
-    if selected_region not in results['all_regions']:
-        st.warning(f"Dados para {selected_region} não disponíveis")
-        return
-    
-    # Obter dados da região selecionada
-    region_df = results['all_regions'][selected_region]
-    region_daily = region_df.groupby(region_df['time'].dt.date)['precipitation'].sum().reset_index()
-    region_daily.columns = ['date', 'precipitation']
-    
-    # Estatísticas
-    st.subheader(f"📊 Estatísticas para {selected_region}")
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        st.metric("Total", f"{region_daily['precipitation'].sum():.1f} mm")
-    
-    with col2:
-        st.metric("Máximo Diário", f"{region_daily['precipitation'].max():.1f} mm")
-    
-    with col3:
-        st.metric("Média Diária", f"{region_daily['precipitation'].mean():.1f} mm")
-    
-    with col4:
-        rain_days = (region_daily['precipitation'] > 0.1).sum()
-        st.metric("Dias com Chuva", f"{rain_days} dias")
-    
-    # Gráfico de série temporal
-    st.subheader("📈 Série Temporal")
-    fig, ax = plt.subplots(figsize=(12, 6))
-    ax.bar(region_daily['date'], region_daily['precipitation'], alpha=0.7)
-    ax.set_xlabel("Data")
-    ax.set_ylabel("Precipitação (mm)")
-    ax.set_title(f"Precipitação Diária - {selected_region}")
-    fig.autofmt_xdate()
-    st.pyplot(fig)
-    
-    # Previsão ML
-    if results['ml_forecast'] and selected_region in results['ml_forecast']:
-        st.subheader("🔮 Previsão ML")
-        ml_forecast = results['ml_forecast'][selected_region]
-        
-        fig, ax = plt.subplots(figsize=(12, 6))
-        ax.bar(ml_forecast['date'], ml_forecast['precipitation'], color='orange', alpha=0.7)
-        ax.set_xlabel("Data")
-        ax.set_ylabel("Precipitação Prevista (mm)")
-        ax.set_title(f"Previsão {params['ml_model']} - {selected_region}")
-        fig.autofmt_xdate()
-        st.pyplot(fig)
-        
-        # Tabela de previsão
-        st.subheader("📋 Tabela de Previsão")
-        forecast_table = ml_forecast[['date', 'precipitation']].copy()
-        forecast_table['precipitation'] = forecast_table['precipitation'].round(1)
-        forecast_table.columns = ['Data', 'Precipitação (mm)']
-        st.dataframe(forecast_table)
-
-def display_about():
-    """Exibe informações sobre o aplicativo"""
-    st.subheader("Sobre este Aplicativo")
-    
-    st.markdown("""
-    ### 📊 Visualizador de Precipitação - Campo Grande, MS
-    
-    Este aplicativo permite visualizar dados históricos e previsões de precipitação para 
-    Campo Grande e regiões, utilizando dados do ERA5 da Copernicus Climate Data Store.
-    
-    #### Funcionalidades:
-    
-    - 🗺️ **Mapas de Precipitação**: Visualização espacial da precipitação
-    - 📈 **Séries Temporais**: Análise temporal da precipitação
-    - 🔮 **Previsão**: Modelos de ML para previsão de precipitação
-    - 🌧️ **Probabilidade**: Mapas de probabilidade de chuva
-    - 📊 **Análise Regional**: Comparação entre diferentes regiões
-    
-    #### Dados:
-    
-    Os dados são obtidos do ERA5, o modelo mais recente de reanálise atmosférica 
-    produzido pelo Centro Europeu de Previsões Meteorológicas de Médio Prazo (ECMWF).
-    
-    #### Como usar:
-    
-    1. Selecione a região de interesse no painel lateral
-    2. Escolha o período de análise
-    3. Configure os parâmetros avançados se necessário
-    4. Explore os diferentes painéis de visualização
-    
-    ---
-    
-    Desenvolvido para Águas Guariroba S.A.
-    """)
-
-def main():
-    """Função principal"""
-    # Logo e título
-    col1, col2 = st.columns([1, 3])
-    
-    with col1:
-        st.image("https://aguasguariroba.com.br/wp-content/uploads/2019/08/logo-menu.png", width=100)
-    
-    with col2:
-        st.title("Visualizador de Precipitação - Campo Grande")
-        st.caption("Análise e previsão de precipitação para o sistema de abastecimento")
-    
-    # Abas
-    tab1, tab2, tab3 = st.tabs(["📊 Dashboard", "🔍 Análise Regional", "ℹ️ Sobre"])
-    
-    # Configuração da barra lateral
-    params = setup_sidebar()
-    
-    # Obter cliente CDS
-    cds_client = get_cds_client()
-    
-    with tab1:
-        # Download e processamento de dados
-        with st.spinner("Carregando dados..."):
-            ds = download_era5_data(params, cds_client)
-            
-            if ds is not None:
-                results = process_precipitation_data(ds, params)
-                if results:
-                    show_analysis_results(results, params)
-                else:
-                    st.error("❌ Erro no processamento dos dados")
-            else:
-                st.error("❌ Não foi possível obter os dados")
-    
-    with tab2:
-        # Análise regional
-        if 'results' in locals() and results:
-            show_region_analysis(results, params)
-        else:
-            with st.spinner("Carregando dados..."):
-                ds = download_era5_data(params, cds_client)
-                
-                if ds is not None:
-                    results = process_precipitation_data(ds, params)
-                    if results:
-                        show_region_analysis(results, params)
-                    else:
-                        st.error("❌ Erro no processamento dos dados")
-                else:
-                    st.error("❌ Não foi possível obter os dados")
-    
-    with tab3:
-        display_about()
-
-if __name__ == "__main__":
-    main()
-       
