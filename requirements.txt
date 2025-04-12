@@ -5,6 +5,7 @@ numpy
 matplotlib
 cartopy
 pandas
+geopandas
 scikit-learn
 h5netcdf
 netCDF4
