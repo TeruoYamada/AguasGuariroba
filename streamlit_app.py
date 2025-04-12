@@ -675,7 +675,6 @@ def main():
                     fig = create_simple_map(data, "Mapa de Calor Regional")
                     st.pyplot(fig)
                 
-                # Tabela comparativa de estatísticas regionais
                 st.subheader("Estatísticas por Região")
                 
                 # Preparar dados para tabela comparativa
