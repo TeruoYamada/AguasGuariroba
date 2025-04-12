@@ -8,7 +8,9 @@ pandas
 scikit-learn
 h5netcdf
 netCDF4
+matplotlib-inline
 pillow
 tempfile
 datetime
 date
+cartopy
