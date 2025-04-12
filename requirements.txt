@@ -10,8 +10,6 @@ scikit-learn
 h5netcdf
 netCDF4
 pillow
-datetime
-date
 cartopy
 tempfile
 scipy
