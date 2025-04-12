@@ -7,6 +7,7 @@ import io
 import base64
 from PIL import Image
 from datetime import datetime, timedelta
+import tempfile
 
 # Configuração inicial
 st.set_page_config(
