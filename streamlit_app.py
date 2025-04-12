@@ -5,8 +5,10 @@ import matplotlib.dates as mdates
 import numpy as np
 import io
 import base64
+import datetime
 from PIL import Image
 from datetime import datetime, timedelta
+import tempfile
 
 # Configuração inicial
 st.set_page_config(
