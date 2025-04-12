@@ -14,3 +14,4 @@ pillow
 datetime
 date
 cartopy
+tempfile
