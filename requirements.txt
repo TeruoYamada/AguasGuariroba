@@ -11,5 +11,4 @@ h5netcdf
 netcdf4
 pillow
 cartopy
-tempfile
 scipy
