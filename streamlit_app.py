@@ -1,3 +1,4 @@
+```python
 import cdsapi
 import xarray as xr
 import numpy as np
@@ -117,10 +118,19 @@ def download_era5_data(params, client):
         filename = f"era5_data_{params['start_date']}_{params['end_date']}.nc"
 
         # Definindo área com buffer para visualização do mapa
-        buffer = params['map_width'] * 2  # Buffer para mapa mais amplo
+        buffer = params['map_width']  # Buffer para mapa mais amplo
 
         # Construindo datas de forma correta
         date_range = pd.date_range(params['start_date'], params['end_date'])
+
+        # Define uma área específica para Campo Grande
+        # Coordenadas aproximadas para cobrir todos os setores da cidade
+        area = [
+            -20.35,  # Latitude Norte 
+            -54.75,  # Longitude Oeste
+            -20.60,  # Latitude Sul
+            -54.50   # Longitude Leste
+        ]
 
         request = {
             'product_type': params['product_type'],
@@ -129,19 +139,20 @@ def download_era5_data(params, client):
             'month': sorted(list(set([f"{d.month:02d}" for d in date_range]))),
             'day': sorted(list(set([f"{d.day:02d}" for d in date_range]))),
             'time': [f"{h:02d}:00" for h in range(params['start_hour'], params['end_hour']+1, 3)],
-            'area': [
-                params['lat_center'] + buffer,
-                params['lon_center'] - buffer,
-                params['lat_center'] - buffer,
-                params['lon_center'] + buffer
-            ],
+            'area': area,
             'format': 'netcdf'
         }
 
         with st.spinner("Baixando dados do ERA5..."):
             client.retrieve('reanalysis-era5-single-levels', request, filename)
 
-        return xr.open_dataset(filename)
+        # Validar que os dados possuem dimensão temporal
+        ds = xr.open_dataset(filename)
+        if 'time' not in ds.dims or len(ds.time) == 0:
+            st.error("Os dados baixados não contêm informações temporais válidas.")
+            return None
+
+        return ds
 
     except Exception as e:
         st.error(f"Erro ao baixar dados: {str(e)}")
@@ -279,7 +290,7 @@ def create_precipitation_map(ds, timestep, params):
     fig = plt.figure(figsize=(12, 8))
     
     # Definir projeção e área
-    buffer = params['map_width'] * 2
+    buffer = params['map_width']
     projection = ccrs.PlateCarree()
     ax = fig.add_subplot(1, 1, 1, projection=projection)
     
@@ -288,47 +299,63 @@ def create_precipitation_map(ds, timestep, params):
     ax.add_feature(cfeature.BORDERS, linestyle=':')
     ax.add_feature(cfeature.STATES, alpha=0.3)
     
-    # Limitar área do mapa
+    # Limitar área do mapa para Campo Grande e arredores
     ax.set_extent([
-        params['lon_center'] - buffer,
-        params['lon_center'] + buffer,
-        params['lat_center'] - buffer,
-        params['lat_center'] + buffer
+        -54.70, -54.55,  # Longitude min/max - Focused on Campo Grande
+        -20.55, -20.40   # Latitude min/max - Focused on Campo Grande
     ], crs=projection)
     
-    # Extrair dados para o timestep
-    selected_time = ds.time[timestep].values
-    data = ds[params['precip_var']].isel(time=timestep) * 1000  # Convertendo para mm
+    try:
+        # Verificar se o timestep é válido
+        if isinstance(timestep, int) and timestep < len(ds.time):
+            # Extrair dados para o timestep
+            selected_time = ds.time[timestep].values
+            data = ds[params['precip_var']].isel(time=timestep) * 1000  # Convertendo para mm
+            
+            # Definir níveis de precipitação para o mapa de cores
+            levels = [0, 0.1, 0.5, 1, 2.5, 5, 10, 15, 20, 30, 50, 75, 100]
+            
+            # Plotar dados
+            contour = ax.contourf(
+                ds.longitude, ds.latitude, data,
+                levels=levels, 
+                cmap=params['colormap'],
+                transform=projection,
+                extend='max'
+            )
+            
+            # Adicionar marcadores para áreas de Campo Grande
+            for name, (lat, lon) in CAMPOS_GRANDE_AREAS.items():
+                ax.plot(lon, lat, 'ro', markersize=5, transform=projection)
+                ax.text(lon + 0.01, lat + 0.01, name, transform=projection, fontsize=8,
+                        bbox=dict(facecolor='white', alpha=0.7, edgecolor='none', pad=1))
+            
+            # Adicionar barra de cores
+            cbar = plt.colorbar(contour, ax=ax, orientation='horizontal', pad=0.05, shrink=0.8)
+            cbar.set_label(PRECIPITATION_VARIABLES[params['precip_var']])
+            
+            # Adicionar título com informação do timestep
+            time_str = pd.to_datetime(selected_time).strftime('%Y-%m-%d %H:%M')
+            plt.title(f"Precipitação em Campo Grande - {time_str}")
+            
+            # Adicionar grade
+            gl = ax.gridlines(draw_labels=True, linewidth=0.5, alpha=0.5, linestyle='--')
+            gl.top_labels = False
+            gl.right_labels = False
+            
+            # Adicionar legenda para os setores
+            plt.legend(handles=[
+                plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='r', markersize=8, label='Setores de Campo Grande')
+            ], loc='lower right')
+            
+        else:
+            ax.text(0.5, 0.5, "Dados de tempo inválidos", transform=ax.transAxes, 
+                    fontsize=14, ha='center', va='center')
     
-    # Definir níveis de precipitação para o mapa de cores
-    levels = [0, 0.1, 0.5, 1, 2.5, 5, 10, 15, 20, 30, 50, 75, 100]
-    
-    # Plotar dados
-    contour = ax.contourf(
-        ds.longitude, ds.latitude, data,
-        levels=levels, 
-        cmap=params['colormap'],
-        transform=projection,
-        extend='max'
-    )
-    
-    # Adicionar marcadores para áreas de Campo Grande
-    for name, (lat, lon) in CAMPOS_GRANDE_AREAS.items():
-        ax.plot(lon, lat, 'ro', markersize=4, transform=projection)
-        ax.text(lon + 0.02, lat + 0.02, name, transform=projection, fontsize=8)
-    
-    # Adicionar barra de cores
-    cbar = plt.colorbar(contour, ax=ax, orientation='horizontal', pad=0.05, shrink=0.8)
-    cbar.set_label(PRECIPITATION_VARIABLES[params['precip_var']])
-    
-    # Adicionar título com informação do timestep
-    time_str = pd.to_datetime(selected_time).strftime('%Y-%m-%d %H:%M')
-    plt.title(f"Precipitação em Campo Grande - {time_str}")
-    
-    # Adicionar grade
-    gl = ax.gridlines(draw_labels=True, linewidth=0.5, alpha=0.5, linestyle='--')
-    gl.top_labels = False
-    gl.right_labels = False
+    except Exception as e:
+        logger.exception("Erro ao criar mapa")
+        ax.text(0.5, 0.5, f"Erro ao renderizar: {str(e)}", transform=ax.transAxes, 
+                fontsize=12, ha='center', va='center')
     
     return fig
 
@@ -347,11 +374,10 @@ def create_map_animation(ds, params):
     ax.add_feature(cfeature.BORDERS, linestyle=':')
     ax.add_feature(cfeature.STATES, alpha=0.3)
     
+    # Limitar área do mapa para Campo Grande e arredores
     ax.set_extent([
-        params['lon_center'] - buffer,
-        params['lon_center'] + buffer,
-        params['lat_center'] - buffer,
-        params['lat_center'] + buffer
+        -54.70, -54.55,  # Longitude min/max - Focused on Campo Grande
+        -20.55, -20.40   # Latitude min/max - Focused on Campo Grande
     ], crs=projection)
     
     # Níveis de precipitação para o mapa de cores
@@ -364,52 +390,78 @@ def create_map_animation(ds, params):
         ax.add_feature(cfeature.BORDERS, linestyle=':')
         ax.add_feature(cfeature.STATES, alpha=0.3)
         
+        # Limitar área do mapa para Campo Grande e arredores
         ax.set_extent([
-            params['lon_center'] - buffer,
-            params['lon_center'] + buffer,
-            params['lat_center'] - buffer,
-            params['lat_center'] + buffer
+            -54.70, -54.55,  # Longitude min/max - Focused on Campo Grande
+            -20.55, -20.40   # Latitude min/max - Focused on Campo Grande
         ], crs=projection)
         
-        # Extrair dados para o frame atual
-        data = ds[params['precip_var']].isel(time=frame) * 1000  # Convertendo para mm
+        try:
+            # Extrair dados para o frame atual
+            data = ds[params['precip_var']].isel(time=frame) * 1000  # Convertendo para mm
+            
+            # Plotar precipitação
+            contour = ax.contourf(
+                ds.longitude, ds.latitude, data,
+                levels=levels, 
+                cmap=params['colormap'],
+                transform=projection,
+                extend='max'
+            )
+            
+            # Adicionar marcadores para áreas de Campo Grande
+            for name, (lat, lon) in CAMPOS_GRANDE_AREAS.items():
+                ax.plot(lon, lat, 'ro', markersize=5, transform=projection)
+                ax.text(lon + 0.01, lat + 0.01, name, transform=projection, fontsize=8,
+                        bbox=dict(facecolor='white', alpha=0.7, edgecolor='none', pad=1))
+            
+            # Adicionar informação do timestamp
+            time_str = pd.to_datetime(ds.time[frame].values).strftime('%Y-%m-%d %H:%M')
+            ax.set_title(f"Precipitação em Campo Grande - {time_str}")
+            
+            # Adicionar grade
+            gl = ax.gridlines(draw_labels=True, linewidth=0.5, alpha=0.5, linestyle='--')
+            gl.top_labels = False
+            gl.right_labels = False
+            
+            return [contour]
+            
+        except Exception as e:
+            logger.exception(f"Erro no frame {frame}: {str(e)}")
+            ax.text(0.5, 0.5, f"Erro no frame {frame}", transform=ax.transAxes, 
+                    fontsize=14, ha='center', va='center')
+            return []
+    
+    try:
+        # Verificar se temos frames suficientes
+        n_frames = min(10, len(ds.time)) if hasattr(ds, 'time') and len(ds.time) > 0 else 0
         
-        # Plotar precipitação
-        contour = ax.contourf(
-            ds.longitude, ds.latitude, data,
-            levels=levels, 
-            cmap=params['colormap'],
-            transform=projection,
-            extend='max'
+        if n_frames == 0:
+            fig.text(0.5, 0.5, "Sem dados temporais para animação", 
+                    fontsize=14, ha='center', va='center')
+            return fig
+        
+        # Criar animação
+        ani = FuncAnimation(
+            fig, update,
+            frames=n_frames,
+            interval=params['animation_speed'],
+            blit=False
         )
         
-        # Adicionar marcadores para áreas de Campo Grande
-        for name, (lat, lon) in CAMPOS_GRANDE_AREAS.items():
-            ax.plot(lon, lat, 'ro', markersize=4, transform=projection)
-            
-        # Adicionar informação do timestamp
-        time_str = pd.to_datetime(ds.time[frame].values).strftime('%Y-%m-%d %H:%M')
-        ax.set_title(f"Precipitação em Campo Grande - {time_str}")
+        # Adicionar barra de cores ao primeiro frame
+        first_frame = update(0)
+        if first_frame:
+            plt.colorbar(first_frame[0], ax=ax, orientation='horizontal', pad=0.05, shrink=0.8,
+                        label=PRECIPITATION_VARIABLES[params['precip_var']])
         
-        # Adicionar grade
-        gl = ax.gridlines(draw_labels=True, linewidth=0.5, alpha=0.5, linestyle='--')
-        gl.top_labels = False
-        gl.right_labels = False
+        return ani
         
-        return contour,
-    
-    # Criar animação
-    ani = FuncAnimation(
-        fig, update,
-        frames=min(10, len(ds.time)),  # Limite para os primeiros 10 frames ou menos
-        interval=params['animation_speed'],
-        blit=False
-    )
-    
-    # Adicionar barra de cores
-    plt.colorbar(update(0)[0], ax=ax, orientation='horizontal', pad=0.05, shrink=0.8)
-    
-    return ani
+    except Exception as e:
+        logger.exception(f"Erro na animação: {str(e)}")
+        fig.text(0.5, 0.5, f"Erro ao criar animação: {str(e)}", 
+                fontsize=12, ha='center', va='center')
+        return fig
 
 def render_time_series(results, params):
     """Renderiza gráficos de série temporal"""
@@ -551,41 +603,49 @@ def main():
         if st.session_state['data'] is not None:
             ds = st.session_state['data']
             
-            # Seletor de timestamp
-            timestamps = [pd.to_datetime(t.values).strftime("%Y-%m-%d %H:%M") 
-                         for t in ds.time[:min(20, len(ds.time))]]
-            
-            selected_time = st.selectbox(
-                "Selecione o horário para visualização:", 
-                range(len(timestamps)), 
-                format_func=lambda i: timestamps[i]
-            )
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                # Toggle para animação
-                show_animation = st.toggle("Mostrar animação", value=False)
-            
-            # Exibir mapa estático ou animação
-            with st.spinner("Renderizando mapa..."):
-                if show_animation:
-                    try:
-                        st.warning("Animação pode levar alguns instantes para ser renderizada.")
-                        animation = create_map_animation(ds, params)
-                        
-                        # Salvar animação em buffer e exibir como vídeo
-                        ani_file = f"animation_{params['start_date']}_{params['area']}.gif"
-                        animation.save(ani_file, writer='pillow', fps=2)
-                        
-                        st.image(ani_file, caption="Animação de Precipitação", use_column_width=True)
-                        
-                    except Exception as e:
-                        st.error(f"Erro ao criar animação: {str(e)}")
-                        logger.exception("Erro na animação")
+            # Add proper error handling for time dimension
+            try:
+                if hasattr(ds, 'time') and len(ds.time) > 0:
+                    # Seletor de timestamp
+                    timestamps = [pd.to_datetime(t.values).strftime("%Y-%m-%d %H:%M") 
+                                for t in ds.time[:min(20, len(ds.time))]]
+                    
+                    selected_time = st.selectbox(
+                        "Selecione o horário para visualização:", 
+                        range(len(timestamps)), 
+                        format_func=lambda i: timestamps[i]
+                    )
+                    
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        # Toggle para animação
+                        show_animation = st.toggle("Mostrar animação", value=False)
+                    
+                    # Exibir mapa estático ou animação
+                    with st.spinner("Renderizando mapa..."):
+                        if show_animation:
+                            try:
+                                st.warning("Animação pode levar alguns instantes para ser renderizada.")
+                                animation = create_map_animation(ds, params)
+                                
+                                # Salvar animação em buffer e exibir como vídeo
+                                ani_file = f"animation_{params['start_date']}_{params['area']}.gif"
+                                animation.save(ani_file, writer='pillow', fps=2)
+                                
+                                st.image(ani_file, caption="Animação de Precipitação", use_column_width=True)
+                                
+                            except Exception as e:
+                                st.error(f"Erro ao criar animação: {str(e)}")
+                                logger.exception("Erro na animação")
+                        else:
+                            # Mapa estático
+                            fig = create_precipitation_map(ds, selected_time, params)
+                            st.pyplot(fig)
                 else:
-                    # Mapa estático
-                    fig = create_precipitation_map(ds, selected_time, params)
-                    st.pyplot(fig)
+                    st.error("Os dados não contêm informações de tempo válidas. Tente atualizar os dados novamente.")
+            except Exception as e:
+                st.error(f"Erro ao processar dados de tempo: {str(e)}")
+                logger.exception("Erro ao acessar dimensão temporal")
         else:
             st.info("Clique em 'Atualizar Dados' para visualizar o mapa de precipitação.")
     
@@ -642,7 +702,3 @@ def main():
         **Observações:**
         - Os dados do ERA5 têm resolução espacial limitada, o que pode afetar a precisão para áreas urbanas
         - A previsão é uma estimativa simples baseada em tendências recentes
-        """)
-
-if __name__ == "__main__":
-    main()
