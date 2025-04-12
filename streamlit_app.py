@@ -141,7 +141,7 @@ def download_era5_data(params, client):
             'day': sorted(list(set([f"{d.day:02d}" for d in date_range]))),
             'time': time_list,
             'area': area,
-            'format': 'netcdf'
+            'format': 'netcdf4'
         }
 
         st.write("📦 Requisição enviada:", request)
