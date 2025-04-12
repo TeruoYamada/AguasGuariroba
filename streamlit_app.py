@@ -1,41 +1,492 @@
-import cdsapi
-import xarray as xr
-import numpy as np
-import matplotlib.pyplot as plt
-import cartopy.crs as ccrs
-import cartopy.feature as cfeature
-from matplotlib import animation
 import streamlit as st
-from datetime import datetime, timedelta
-import os
 import pandas as pd
+import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
-from sklearn.linear_model import LinearRegression
-from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
-from sklearn.preprocessing import StandardScaler
-from sklearn.pipeline import Pipeline
-from sklearn.metrics import mean_squared_error
-from sklearn.model_selection import TimeSeriesSplit
-from matplotlib.colors import LinearSegmentedColormap
-import logging
+import numpy as np
 import io
-import tempfile
-from matplotlib.animation import FuncAnimation
-from matplotlib.patches import Rectangle
-import geopandas as gpd
-from PIL import Image
 import base64
-from io import BytesIO
-from scipy import stats
-import requests
-import cartopy.io.img_tiles as cimgt
+from PIL import Image
+from datetime import datetime, timedelta
 
 # Configuração inicial
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+st.set_page_config(
+    layout="wide",
+    page_title="Águas Guariroba - Visualizador de Precipitação - MS",
+    page_icon="🌧️"
+)
 
-# Configuração da página
-st.set_page_config(layout="wide", page_title="Águas Guariroba - Visualizador de Precipitação - MS")
+# Funções auxiliares para estilização
+def create_gradient_background():
+    # Código CSS para gradiente de fundo
+    st.markdown(
+        """
+        <style>
+        .stApp {
+            background: linear-gradient(to bottom, #1e3c72, #2a5298);
+            color: white;
+        }
+        .stSidebar {
+            background-color: rgba(30, 60, 114, 0.8);
+        }
+        .css-1adrfps {
+            background-color: rgba(255, 255, 255, 0.1);
+            border-radius: 10px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        .st-bw {
+            color: white;
+        }
+        .st-cx {
+            background-color: rgba(255, 255, 255, 0.1);
+        }
+        header {
+            background-color: transparent !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True
+    )
+
+def add_logo():
+    # Adicionar logo (placeholder)
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        st.image("https://via.placeholder.com/400x100?text=Águas+Guariroba", use_column_width=True)
+
+# Criando a interface
+def main():
+    # Aplicando estilização
+    create_gradient_background()
+    
+    # Cabeçalho
+    add_logo()
+    st.title("📊 Visualizador de Precipitação - Campo Grande, MS")
+    st.markdown("### Sistema de Monitoramento e Previsão de Chuvas")
+    
+    # Sidebar para configurações
+    with st.sidebar:
+        st.header("⚙️ Configurações")
+        
+        # Abas para organizar as configurações
+        config_tab1, config_tab2, config_tab3 = st.tabs(["📍 Local", "📅 Período", "🔧 Avançado"])
+        
+        with config_tab1:
+            # Seleção de região
+            area = st.selectbox(
+                "Selecione a região",
+                list(CAMPOS_GRANDE_AREAS.keys()),
+                index=0
+            )
+            lat_center, lon_center = CAMPOS_GRANDE_AREAS.get(area, (-20.4697, -54.6201))
+            
+            # Visualização do mapa
+            map_width = st.slider("Área de Visualização (graus)", 0.1, 2.0, 0.3, 0.1)
+            show_shapefile = st.checkbox("Mostrar Área Urbana", value=True)
+            satellite_background = st.checkbox("Usar Imagem de Satélite", value=True)
+        
+        with config_tab2:
+            # Período de análise
+            st.subheader("Período de Análise")
+            today = datetime.today()
+            col1, col2 = st.columns(2)
+            with col1:
+                start_date = st.date_input("Início", today - timedelta(days=7))
+            with col2:
+                end_date = st.date_input("Fim", today + timedelta(days=5))
+            
+            # Horários
+            st.subheader("Horários")
+            all_hours = [f"{h:02d}:00" for h in range(0, 24, 3)]
+            col1, col2 = st.columns(2)
+            with col1:
+                start_hour = st.selectbox("Hora Inicial", all_hours)
+            with col2:
+                end_hour = st.selectbox("Hora Final", all_hours, index=len(all_hours)-1)
+
+            # Variável de precipitação
+            precip_var = st.selectbox(
+                "Variável de Precipitação", 
+                list(PRECIPITATION_VARIABLES.keys()),
+                format_func=lambda x: PRECIPITATION_VARIABLES[x]
+            )
+            
+            # Horizonte de previsão
+            forecast_days = st.slider("Horizonte de Previsão (dias)", 1, 14, 7)
+            
+        with config_tab3:
+            # Configurações avançadas
+            st.subheader("Configurações Avançadas")
+            
+            animation_speed = st.slider("Velocidade Animação (ms)", 200, 1000, 500)
+            colormap = st.selectbox("Paleta de Cores", COLORMAPS)
+            
+            product_type = st.radio("Tipo de Produto", ["reanalysis", "ensemble_mean"])
+            ml_model = st.selectbox("Modelo de Previsão", 
+                                  ["RandomForest", "GradientBoosting", "LinearRegression"])
+            
+            probability_threshold = st.slider("Limiar de Probabilidade (%)", 0, 100, 30)
+    
+    # Botão para atualizar dados
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        update_button = st.button("🔄 Atualizar Dados", use_container_width=True)
+
+    # Organizar a exibição dos dados em abas
+    tab1, tab2, tab3, tab4 = st.tabs(["📈 Série Temporal", "🗺️ Mapas", "🔮 Previsões", "📊 Análise Regional"])
+    
+    # Simular dados para demonstração
+    if 'data' not in st.session_state or update_button:
+        with st.spinner("⌛ Carregando dados..."):
+            # Normalmente aqui chamaríamos a função download_era5_data e process_precipitation_data
+            # Para demonstração, vamos gerar dados simulados
+            st.session_state.data = {
+                'timeseries': simulate_timeseries_data(start_date, end_date),
+                'daily': simulate_daily_data(start_date, end_date),
+                'forecast': simulate_forecast_data(end_date, forecast_days),
+                'ml_forecast': simulate_ml_forecast(list(CAMPOS_GRANDE_AREAS.keys()), end_date, forecast_days),
+                'all_regions': {region: simulate_timeseries_data(start_date, end_date) 
+                              for region in CAMPOS_GRANDE_AREAS.keys()}
+            }
+    
+    # Tab 1: Série Temporal
+    with tab1:
+        st.header(f"Série Temporal de Precipitação - {area}")
+        
+        data = st.session_state.data
+        
+        # Gráfico de série temporal
+        fig, ax = plt.subplots(figsize=(12, 6))
+        ax.bar(data['timeseries']['time'], data['timeseries']['precipitation'],
+               width=0.02, alpha=0.7, color='#1e88e5', label='Precipitação a cada 3h')
+        
+        # Formatar eixos
+        ax.xaxis.set_major_formatter(mdates.DateFormatter('%d/%m %H:%M'))
+        plt.xticks(rotation=45)
+        ax.set_ylabel('Precipitação (mm)', fontsize=12)
+        ax.set_title(f'Precipitação em {area} - {start_date.strftime("%d/%m/%Y")} a {end_date.strftime("%d/%m/%Y")}', 
+                    fontsize=14)
+        ax.grid(True, alpha=0.3)
+        plt.tight_layout()
+        
+        st.pyplot(fig)
+        
+        # Estatísticas diárias
+        st.subheader("Estatísticas Diárias")
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.metric("Precipitação Total", f"{data['daily']['precipitation'].sum():.1f} mm")
+        with col2:
+            st.metric("Precipitação Média Diária", f"{data['daily']['precipitation'].mean():.1f} mm/dia")
+        with col3:
+            st.metric("Dias com Chuva", f"{(data['daily']['precipitation'] > 0.1).sum()} dias")
+        
+        # Tabela de dados diários
+        st.subheader("Dados Diários")
+        display_df = data['daily'].copy()
+        display_df['date'] = display_df['date'].dt.strftime('%d/%m/%Y')
+        display_df.columns = ['Data', 'Precipitação (mm)']
+        st.dataframe(display_df, use_container_width=True)
+    
+    # Tab 2: Mapas
+    with tab2:
+        st.header("Visualização Espacial da Precipitação")
+        
+        # Seletor de tempo para o mapa
+        timestamps = data['timeseries']['time'].tolist()
+        selected_time = st.select_slider(
+            "Selecione um Momento:",
+            options=timestamps,
+            format_func=lambda x: x.strftime('%d/%m/%Y %H:%M')
+        )
+        
+        # Criar duas colunas para os mapas
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.subheader("Mapa de Precipitação")
+            # Aqui normalmente chamaríamos create_precip_map
+            # Por ora vamos mostrar uma imagem placeholder
+            st.image("https://via.placeholder.com/800x600?text=Mapa+de+Precipitação", use_column_width=True)
+            
+        with col2:
+            st.subheader("Probabilidade de Chuva")
+            # Aqui normalmente chamaríamos a função que gera o mapa de probabilidade
+            st.image("https://via.placeholder.com/800x600?text=Mapa+de+Probabilidade", use_column_width=True)
+        
+        # Animação
+        st.subheader("Animação da Precipitação")
+        animation_placeholder = st.empty()
+        animation_placeholder.image("https://via.placeholder.com/800x600?text=Animação+(GIF)", use_column_width=True)
+        
+        # Opção para download da animação
+        st.download_button(
+            label="⬇️ Download da Animação",
+            data=io.BytesIO(b"Placeholder para o GIF real"),
+            file_name="precipitacao_animacao.gif",
+            mime="image/gif"
+        )
+    
+    # Tab 3: Previsões
+    with tab3:
+        st.header("Previsão de Precipitação")
+        
+        # Escolha do modelo de previsão
+        forecast_method = st.radio(
+            "Método de Previsão:",
+            ["Modelo Linear", "Machine Learning", "Média dos Métodos"],
+            horizontal=True
+        )
+        
+        # Gráfico de previsão
+        fig, ax = plt.subplots(figsize=(12, 6))
+        
+        # Dados históricos
+        historical_dates = data['daily']['date'].tolist()
+        historical_precip = data['daily']['precipitation'].tolist()
+        ax.bar(historical_dates, historical_precip, width=0.6, alpha=0.7, color='#1e88e5', label='Histórico')
+        
+        # Dados de previsão
+        forecast_dates = data['forecast']['date'].tolist()
+        forecast_precip = data['forecast']['precipitation'].tolist()
+        ax.bar(forecast_dates, forecast_precip, width=0.6, alpha=0.7, color='#ff9800', label='Previsão')
+        
+        # Formatar eixos
+        ax.xaxis.set_major_formatter(mdates.DateFormatter('%d/%m'))
+        plt.xticks(rotation=45)
+        ax.set_ylabel('Precipitação (mm/dia)', fontsize=12)
+        ax.set_title(f'Previsão de Precipitação para {area} - Próximos {forecast_days} dias', fontsize=14)
+        ax.grid(True, alpha=0.3)
+        ax.legend()
+        plt.tight_layout()
+        
+        st.pyplot(fig)
+        
+        # Detalhes da previsão
+        st.subheader("Detalhes da Previsão")
+        
+        # Estatísticas de previsão
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Precipitação Total Prevista", f"{data['forecast']['precipitation'].sum():.1f} mm")
+        with col2:
+            st.metric("Precipitação Máxima Diária", f"{data['forecast']['precipitation'].max():.1f} mm")
+        with col3:
+            st.metric("Dias com Chuva Previstos", f"{(data['forecast']['precipitation'] > 0.1).sum()} dias")
+        
+        # Tabela de previsão
+        st.subheader("Dados de Previsão")
+        forecast_display = data['forecast'].copy()
+        forecast_display['date'] = forecast_display['date'].dt.strftime('%d/%m/%Y')
+        forecast_display = forecast_display[['date', 'precipitation']]
+        forecast_display.columns = ['Data', 'Precipitação Prevista (mm)']
+        st.dataframe(forecast_display, use_container_width=True)
+    
+    # Tab 4: Análise Regional
+    with tab4:
+        st.header("Comparação Entre Regiões")
+        
+        # Selecionar regiões para comparação
+        selected_regions = st.multiselect(
+            "Selecione as regiões para comparar:",
+            list(CAMPOS_GRANDE_AREAS.keys()),
+            default=["Centro", "Região Norte", "Região Sul"]
+        )
+        
+        if selected_regions:
+            # Gráfico de comparação entre regiões
+            fig, ax = plt.subplots(figsize=(12, 6))
+            
+            for region in selected_regions:
+                region_data = data['all_regions'][region]
+                region_daily = region_data.groupby('date')['precipitation'].sum().reset_index()
+                ax.plot(region_daily['date'], region_daily['precipitation'], linewidth=2, label=region)
+            
+            # Formatar eixos
+            ax.xaxis.set_major_formatter(mdates.DateFormatter('%d/%m'))
+            plt.xticks(rotation=45)
+            ax.set_ylabel('Precipitação (mm/dia)', fontsize=12)
+            ax.set_title('Comparação de Precipitação Entre Regiões', fontsize=14)
+            ax.grid(True, alpha=0.3)
+            ax.legend()
+            plt.tight_layout()
+            
+            st.pyplot(fig)
+            
+            # Mapa de calor regional
+            st.subheader("Mapa de Calor Regional")
+            st.image("https://via.placeholder.com/800x600?text=Mapa+de+Calor+Regional", use_column_width=True)
+            
+            # Tabela comparativa
+            st.subheader("Tabela Comparativa")
+            
+            # Criar tabela comparativa
+            comparison_data = []
+            for region in selected_regions:
+                region_data = data['all_regions'][region]
+                region_daily = region_data.groupby('date')['precipitation'].sum().reset_index()
+                
+                region_forecast = data['ml_forecast'].get(region, pd.DataFrame())
+                if not region_forecast.empty:
+                    forecast_sum = region_forecast['precipitation'].sum()
+                    forecast_max = region_forecast['precipitation'].max()
+                else:
+                    forecast_sum = "-"
+                    forecast_max = "-"
+                
+                comparison_data.append({
+                    "Região": region,
+                    "Precipitação Total (mm)": round(region_daily['precipitation'].sum(), 1),
+                    "Média Diária (mm)": round(region_daily['precipitation'].mean(), 1),
+                    "Máxima Diária (mm)": round(region_daily['precipitation'].max(), 1),
+                    "Previsão Total (mm)": forecast_sum if isinstance(forecast_sum, float) else forecast_sum,
+                    "Previsão Máxima (mm)": forecast_max if isinstance(forecast_max, float) else forecast_max
+                })
+            
+            comparison_df = pd.DataFrame(comparison_data)
+            st.dataframe(comparison_df, use_container_width=True)
+    
+    # Rodapé
+    st.markdown("---")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.markdown("**Desenvolvedora:** Águas Guariroba")
+    with col2:
+        st.markdown("**Fonte de Dados:** ERA5 - Climate Data Store")
+    with col3:
+        st.markdown("**Última Atualização:** " + datetime.now().strftime("%d/%m/%Y %H:%M:%S"))
+
+# --- DADOS SIMULADOS PARA DEMONSTRAÇÃO ---
+def simulate_timeseries_data(start_date, end_date):
+    """Simula dados de série temporal"""
+    start = pd.to_datetime(start_date)
+    end = pd.to_datetime(end_date)
+    times = pd.date_range(start=start, end=end, freq='3H')
+    
+    # Gerar dados aleatórios com alguns padrões
+    np.random.seed(42)  # Para reprodutibilidade
+    
+    # Gerar precipitação baseada em padrões diários e aleatórios
+    precipitation = []
+    for t in times:
+        hour = t.hour
+        # Mais chuva à tarde
+        hour_factor = 0.5 + 0.5 * np.sin(np.pi * (hour - 6) / 12) if 6 <= hour <= 18 else 0.2
+        # Padrão aleatório
+        random_factor = np.random.exponential(1.0)
+        # Alguns eventos de chuva intensa
+        intense = 5 * int(np.random.rand() < 0.05)
+        
+        value = max(0, hour_factor * random_factor + intense)
+        precipitation.append(value)
+    
+    return pd.DataFrame({
+        'time': times,
+        'precipitation': precipitation
+    })
+
+def simulate_daily_data(start_date, end_date):
+    """Simula dados diários"""
+    start = pd.to_datetime(start_date)
+    end = pd.to_datetime(end_date)
+    dates = pd.date_range(start=start, end=end, freq='D')
+    
+    np.random.seed(42)
+    precipitation = []
+    
+    for d in dates:
+        # Mais chuva no verão (considerando hemisfério sul)
+        month = d.month
+        season_factor = 1.5 if (month >= 11 or month <= 3) else 0.7
+        # Padrão aleatório
+        random_factor = np.random.exponential(1.0)
+        
+        value = max(0, season_factor * random_factor * 5)
+        precipitation.append(value)
+    
+    return pd.DataFrame({
+        'date': dates,
+        'precipitation': precipitation
+    })
+
+def simulate_forecast_data(end_date, forecast_days):
+    """Simula dados de previsão"""
+    last_date = pd.to_datetime(end_date)
+    dates = pd.date_range(start=last_date + timedelta(days=1), periods=forecast_days)
+    
+    np.random.seed(43)  # Diferente da série histórica
+    precipitation = []
+    
+    for d in dates:
+        # Mais chuva no verão (considerando hemisfério sul)
+        month = d.month
+        season_factor = 1.5 if (month >= 11 or month <= 3) else 0.7
+        # Padrão aleatório com tendência de diminuição
+        day_factor = max(0.1, 1 - (d - dates[0]).days / forecast_days)
+        random_factor = np.random.exponential(0.8)
+        
+        value = max(0, season_factor * day_factor * random_factor * 5)
+        precipitation.append(value)
+    
+    return pd.DataFrame({
+        'date': dates,
+        'precipitation': precipitation
+    })
+
+def simulate_ml_forecast(regions, end_date, forecast_days):
+    """Simula previsões de ML para cada região"""
+    ml_forecasts = {}
+    
+    for region in regions:
+        last_date = pd.to_datetime(end_date)
+        dates = pd.date_range(start=last_date + timedelta(days=1), periods=forecast_days)
+        
+        np.random.seed(hash(region) % 100)  # Semente diferente para cada região
+        precipitation = []
+        
+        for d in dates:
+            # Variar por região (norte mais chuvoso que sul, etc.)
+            region_factor = 1.2 if "Norte" in region else 0.8 if "Sul" in region else 1.0
+            # Mais chuva no verão
+            month = d.month
+            season_factor = 1.5 if (month >= 11 or month <= 3) else 0.7
+            # Padrão aleatório
+            random_factor = np.random.exponential(0.8)
+            
+            value = max(0, region_factor * season_factor * random_factor * 5)
+            precipitation.append(value)
+        
+        ml_forecasts[region] = pd.DataFrame({
+            'date': dates,
+            'precipitation': precipitation,
+            'region': region
+        })
+    
+    return ml_forecasts
+
+# Constantes necessárias para o funcionamento (simplificadas)
+CAMPOS_GRANDE_AREAS = {
+    "Centro": [-20.4697, -54.6201],
+    "Região Norte": [-20.4297, -54.6101],
+    "Região Sul": [-20.5097, -54.6201],
+    "Região Leste": [-20.4697, -54.5801],
+    "Região Oeste": [-20.4697, -54.6601],
+    "Região Centro-Norte": [-20.4397, -54.6301],
+    "Região Centro-Sul": [-20.4997, -54.6301],
+    "Região Nordeste": [-20.4397, -54.5901],
+    "Região Noroeste": [-20.4397, -54.6501],
+    "Região Sudeste": [-20.4997, -54.5901],
+    "Região Sudoeste": [-20.4997, -54.6501]
+}
+
+PRECIPITATION_VARIABLES = {
+    "total_precipitation": "Precipitação Total (mm)",
+    "large_scale_precipitation": "Precipitação de Grande Escala (mm)",
+    "convective_precipitation": "Precipitação Convectiva (mm)"
+}
+
+COLORMAPS = ["Blues", "viridis", "plasma", "RdYlBu_r", "gist_earth"]
 
 # Definindo um diretório temporário para armazenar os arquivos baixados
 TEMP_DIR = tempfile.gettempdir()
@@ -747,496 +1198,6 @@ def create_precip_map(ds, params, timestamp=None):
     except Exception as e:
         logger.exception(f"Erro ao criar mapa: {e}")
         return plt.figure()
-
-import streamlit as st
-import pandas as pd
-import matplotlib.pyplot as plt
-import matplotlib.dates as mdates
-import numpy as np
-import io
-import base64
-from PIL import Image
-from datetime import datetime, timedelta
-
-# Configuração inicial
-st.set_page_config(
-    layout="wide",
-    page_title="Águas Guariroba - Visualizador de Precipitação - MS",
-    page_icon="🌧️"
-)
-
-# Funções auxiliares para estilização
-def create_gradient_background():
-    # Código CSS para gradiente de fundo
-    st.markdown(
-        """
-        <style>
-        .stApp {
-            background: linear-gradient(to bottom, #1e3c72, #2a5298);
-            color: white;
-        }
-        .stSidebar {
-            background-color: rgba(30, 60, 114, 0.8);
-        }
-        .css-1adrfps {
-            background-color: rgba(255, 255, 255, 0.1);
-            border-radius: 10px;
-            padding: 20px;
-            margin-bottom: 20px;
-        }
-        .st-bw {
-            color: white;
-        }
-        .st-cx {
-            background-color: rgba(255, 255, 255, 0.1);
-        }
-        header {
-            background-color: transparent !important;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True
-    )
-
-def add_logo():
-    # Adicionar logo (placeholder)
-    col1, col2, col3 = st.columns([1, 2, 1])
-    with col2:
-        st.image("https://via.placeholder.com/400x100?text=Águas+Guariroba", use_column_width=True)
-
-# Criando a interface
-def main():
-    # Aplicando estilização
-    create_gradient_background()
-    
-    # Cabeçalho
-    add_logo()
-    st.title("📊 Visualizador de Precipitação - Campo Grande, MS")
-    st.markdown("### Sistema de Monitoramento e Previsão de Chuvas")
-    
-    # Sidebar para configurações
-    with st.sidebar:
-        st.header("⚙️ Configurações")
-        
-        # Abas para organizar as configurações
-        config_tab1, config_tab2, config_tab3 = st.tabs(["📍 Local", "📅 Período", "🔧 Avançado"])
-        
-        with config_tab1:
-            # Seleção de região
-            area = st.selectbox(
-                "Selecione a região",
-                list(CAMPOS_GRANDE_AREAS.keys()),
-                index=0
-            )
-            lat_center, lon_center = CAMPOS_GRANDE_AREAS.get(area, (-20.4697, -54.6201))
-            
-            # Visualização do mapa
-            map_width = st.slider("Área de Visualização (graus)", 0.1, 2.0, 0.3, 0.1)
-            show_shapefile = st.checkbox("Mostrar Área Urbana", value=True)
-            satellite_background = st.checkbox("Usar Imagem de Satélite", value=True)
-        
-        with config_tab2:
-            # Período de análise
-            st.subheader("Período de Análise")
-            today = datetime.today()
-            col1, col2 = st.columns(2)
-            with col1:
-                start_date = st.date_input("Início", today - timedelta(days=7))
-            with col2:
-                end_date = st.date_input("Fim", today + timedelta(days=5))
-            
-            # Horários
-            st.subheader("Horários")
-            all_hours = [f"{h:02d}:00" for h in range(0, 24, 3)]
-            col1, col2 = st.columns(2)
-            with col1:
-                start_hour = st.selectbox("Hora Inicial", all_hours)
-            with col2:
-                end_hour = st.selectbox("Hora Final", all_hours, index=len(all_hours)-1)
-
-            # Variável de precipitação
-            precip_var = st.selectbox(
-                "Variável de Precipitação", 
-                list(PRECIPITATION_VARIABLES.keys()),
-                format_func=lambda x: PRECIPITATION_VARIABLES[x]
-            )
-            
-            # Horizonte de previsão
-            forecast_days = st.slider("Horizonte de Previsão (dias)", 1, 14, 7)
-            
-        with config_tab3:
-            # Configurações avançadas
-            st.subheader("Configurações Avançadas")
-            
-            animation_speed = st.slider("Velocidade Animação (ms)", 200, 1000, 500)
-            colormap = st.selectbox("Paleta de Cores", COLORMAPS)
-            
-            product_type = st.radio("Tipo de Produto", ["reanalysis", "ensemble_mean"])
-            ml_model = st.selectbox("Modelo de Previsão", 
-                                  ["RandomForest", "GradientBoosting", "LinearRegression"])
-            
-            probability_threshold = st.slider("Limiar de Probabilidade (%)", 0, 100, 30)
-    
-    # Botão para atualizar dados
-    col1, col2, col3 = st.columns([1, 2, 1])
-    with col2:
-        update_button = st.button("🔄 Atualizar Dados", use_container_width=True)
-
-    # Organizar a exibição dos dados em abas
-    tab1, tab2, tab3, tab4 = st.tabs(["📈 Série Temporal", "🗺️ Mapas", "🔮 Previsões", "📊 Análise Regional"])
-    
-    # Simular dados para demonstração
-    if 'data' not in st.session_state or update_button:
-        with st.spinner("⌛ Carregando dados..."):
-            # Normalmente aqui chamaríamos a função download_era5_data e process_precipitation_data
-            # Para demonstração, vamos gerar dados simulados
-            st.session_state.data = {
-                'timeseries': simulate_timeseries_data(start_date, end_date),
-                'daily': simulate_daily_data(start_date, end_date),
-                'forecast': simulate_forecast_data(end_date, forecast_days),
-                'ml_forecast': simulate_ml_forecast(list(CAMPOS_GRANDE_AREAS.keys()), end_date, forecast_days),
-                'all_regions': {region: simulate_timeseries_data(start_date, end_date) 
-                              for region in CAMPOS_GRANDE_AREAS.keys()}
-            }
-    
-    # Tab 1: Série Temporal
-    with tab1:
-        st.header(f"Série Temporal de Precipitação - {area}")
-        
-        data = st.session_state.data
-        
-        # Gráfico de série temporal
-        fig, ax = plt.subplots(figsize=(12, 6))
-        ax.bar(data['timeseries']['time'], data['timeseries']['precipitation'],
-               width=0.02, alpha=0.7, color='#1e88e5', label='Precipitação a cada 3h')
-        
-        # Formatar eixos
-        ax.xaxis.set_major_formatter(mdates.DateFormatter('%d/%m %H:%M'))
-        plt.xticks(rotation=45)
-        ax.set_ylabel('Precipitação (mm)', fontsize=12)
-        ax.set_title(f'Precipitação em {area} - {start_date.strftime("%d/%m/%Y")} a {end_date.strftime("%d/%m/%Y")}', 
-                    fontsize=14)
-        ax.grid(True, alpha=0.3)
-        plt.tight_layout()
-        
-        st.pyplot(fig)
-        
-        # Estatísticas diárias
-        st.subheader("Estatísticas Diárias")
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            st.metric("Precipitação Total", f"{data['daily']['precipitation'].sum():.1f} mm")
-        with col2:
-            st.metric("Precipitação Média Diária", f"{data['daily']['precipitation'].mean():.1f} mm/dia")
-        with col3:
-            st.metric("Dias com Chuva", f"{(data['daily']['precipitation'] > 0.1).sum()} dias")
-        
-        # Tabela de dados diários
-        st.subheader("Dados Diários")
-        display_df = data['daily'].copy()
-        display_df['date'] = display_df['date'].dt.strftime('%d/%m/%Y')
-        display_df.columns = ['Data', 'Precipitação (mm)']
-        st.dataframe(display_df, use_container_width=True)
-    
-    # Tab 2: Mapas
-    with tab2:
-        st.header("Visualização Espacial da Precipitação")
-        
-        # Seletor de tempo para o mapa
-        timestamps = data['timeseries']['time'].tolist()
-        selected_time = st.select_slider(
-            "Selecione um Momento:",
-            options=timestamps,
-            format_func=lambda x: x.strftime('%d/%m/%Y %H:%M')
-        )
-        
-        # Criar duas colunas para os mapas
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.subheader("Mapa de Precipitação")
-            # Aqui normalmente chamaríamos create_precip_map
-            # Por ora vamos mostrar uma imagem placeholder
-            st.image("https://via.placeholder.com/800x600?text=Mapa+de+Precipitação", use_column_width=True)
-            
-        with col2:
-            st.subheader("Probabilidade de Chuva")
-            # Aqui normalmente chamaríamos a função que gera o mapa de probabilidade
-            st.image("https://via.placeholder.com/800x600?text=Mapa+de+Probabilidade", use_column_width=True)
-        
-        # Animação
-        st.subheader("Animação da Precipitação")
-        animation_placeholder = st.empty()
-        animation_placeholder.image("https://via.placeholder.com/800x600?text=Animação+(GIF)", use_column_width=True)
-        
-        # Opção para download da animação
-        st.download_button(
-            label="⬇️ Download da Animação",
-            data=io.BytesIO(b"Placeholder para o GIF real"),
-            file_name="precipitacao_animacao.gif",
-            mime="image/gif"
-        )
-    
-    # Tab 3: Previsões
-    with tab3:
-        st.header("Previsão de Precipitação")
-        
-        # Escolha do modelo de previsão
-        forecast_method = st.radio(
-            "Método de Previsão:",
-            ["Modelo Linear", "Machine Learning", "Média dos Métodos"],
-            horizontal=True
-        )
-        
-        # Gráfico de previsão
-        fig, ax = plt.subplots(figsize=(12, 6))
-        
-        # Dados históricos
-        historical_dates = data['daily']['date'].tolist()
-        historical_precip = data['daily']['precipitation'].tolist()
-        ax.bar(historical_dates, historical_precip, width=0.6, alpha=0.7, color='#1e88e5', label='Histórico')
-        
-        # Dados de previsão
-        forecast_dates = data['forecast']['date'].tolist()
-        forecast_precip = data['forecast']['precipitation'].tolist()
-        ax.bar(forecast_dates, forecast_precip, width=0.6, alpha=0.7, color='#ff9800', label='Previsão')
-        
-        # Formatar eixos
-        ax.xaxis.set_major_formatter(mdates.DateFormatter('%d/%m'))
-        plt.xticks(rotation=45)
-        ax.set_ylabel('Precipitação (mm/dia)', fontsize=12)
-        ax.set_title(f'Previsão de Precipitação para {area} - Próximos {forecast_days} dias', fontsize=14)
-        ax.grid(True, alpha=0.3)
-        ax.legend()
-        plt.tight_layout()
-        
-        st.pyplot(fig)
-        
-        # Detalhes da previsão
-        st.subheader("Detalhes da Previsão")
-        
-        # Estatísticas de previsão
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Precipitação Total Prevista", f"{data['forecast']['precipitation'].sum():.1f} mm")
-        with col2:
-            st.metric("Precipitação Máxima Diária", f"{data['forecast']['precipitation'].max():.1f} mm")
-        with col3:
-            st.metric("Dias com Chuva Previstos", f"{(data['forecast']['precipitation'] > 0.1).sum()} dias")
-        
-        # Tabela de previsão
-        st.subheader("Dados de Previsão")
-        forecast_display = data['forecast'].copy()
-        forecast_display['date'] = forecast_display['date'].dt.strftime('%d/%m/%Y')
-        forecast_display = forecast_display[['date', 'precipitation']]
-        forecast_display.columns = ['Data', 'Precipitação Prevista (mm)']
-        st.dataframe(forecast_display, use_container_width=True)
-    
-    # Tab 4: Análise Regional
-    with tab4:
-        st.header("Comparação Entre Regiões")
-        
-        # Selecionar regiões para comparação
-        selected_regions = st.multiselect(
-            "Selecione as regiões para comparar:",
-            list(CAMPOS_GRANDE_AREAS.keys()),
-            default=["Centro", "Região Norte", "Região Sul"]
-        )
-        
-        if selected_regions:
-            # Gráfico de comparação entre regiões
-            fig, ax = plt.subplots(figsize=(12, 6))
-            
-            for region in selected_regions:
-                region_data = data['all_regions'][region]
-                region_daily = region_data.groupby('date')['precipitation'].sum().reset_index()
-                ax.plot(region_daily['date'], region_daily['precipitation'], linewidth=2, label=region)
-            
-            # Formatar eixos
-            ax.xaxis.set_major_formatter(mdates.DateFormatter('%d/%m'))
-            plt.xticks(rotation=45)
-            ax.set_ylabel('Precipitação (mm/dia)', fontsize=12)
-            ax.set_title('Comparação de Precipitação Entre Regiões', fontsize=14)
-            ax.grid(True, alpha=0.3)
-            ax.legend()
-            plt.tight_layout()
-            
-            st.pyplot(fig)
-            
-            # Mapa de calor regional
-            st.subheader("Mapa de Calor Regional")
-            st.image("https://via.placeholder.com/800x600?text=Mapa+de+Calor+Regional", use_column_width=True)
-            
-            # Tabela comparativa
-            st.subheader("Tabela Comparativa")
-            
-            # Criar tabela comparativa
-            comparison_data = []
-            for region in selected_regions:
-                region_data = data['all_regions'][region]
-                region_daily = region_data.groupby('date')['precipitation'].sum().reset_index()
-                
-                region_forecast = data['ml_forecast'].get(region, pd.DataFrame())
-                if not region_forecast.empty:
-                    forecast_sum = region_forecast['precipitation'].sum()
-                    forecast_max = region_forecast['precipitation'].max()
-                else:
-                    forecast_sum = "-"
-                    forecast_max = "-"
-                
-                comparison_data.append({
-                    "Região": region,
-                    "Precipitação Total (mm)": round(region_daily['precipitation'].sum(), 1),
-                    "Média Diária (mm)": round(region_daily['precipitation'].mean(), 1),
-                    "Máxima Diária (mm)": round(region_daily['precipitation'].max(), 1),
-                    "Previsão Total (mm)": forecast_sum if isinstance(forecast_sum, float) else forecast_sum,
-                    "Previsão Máxima (mm)": forecast_max if isinstance(forecast_max, float) else forecast_max
-                })
-            
-            comparison_df = pd.DataFrame(comparison_data)
-            st.dataframe(comparison_df, use_container_width=True)
-    
-    # Rodapé
-    st.markdown("---")
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.markdown("**Desenvolvedora:** Águas Guariroba")
-    with col2:
-        st.markdown("**Fonte de Dados:** ERA5 - Climate Data Store")
-    with col3:
-        st.markdown("**Última Atualização:** " + datetime.now().strftime("%d/%m/%Y %H:%M:%S"))
-
-# --- DADOS SIMULADOS PARA DEMONSTRAÇÃO ---
-def simulate_timeseries_data(start_date, end_date):
-    """Simula dados de série temporal"""
-    start = pd.to_datetime(start_date)
-    end = pd.to_datetime(end_date)
-    times = pd.date_range(start=start, end=end, freq='3H')
-    
-    # Gerar dados aleatórios com alguns padrões
-    np.random.seed(42)  # Para reprodutibilidade
-    
-    # Gerar precipitação baseada em padrões diários e aleatórios
-    precipitation = []
-    for t in times:
-        hour = t.hour
-        # Mais chuva à tarde
-        hour_factor = 0.5 + 0.5 * np.sin(np.pi * (hour - 6) / 12) if 6 <= hour <= 18 else 0.2
-        # Padrão aleatório
-        random_factor = np.random.exponential(1.0)
-        # Alguns eventos de chuva intensa
-        intense = 5 * int(np.random.rand() < 0.05)
-        
-        value = max(0, hour_factor * random_factor + intense)
-        precipitation.append(value)
-    
-    return pd.DataFrame({
-        'time': times,
-        'precipitation': precipitation
-    })
-
-def simulate_daily_data(start_date, end_date):
-    """Simula dados diários"""
-    start = pd.to_datetime(start_date)
-    end = pd.to_datetime(end_date)
-    dates = pd.date_range(start=start, end=end, freq='D')
-    
-    np.random.seed(42)
-    precipitation = []
-    
-    for d in dates:
-        # Mais chuva no verão (considerando hemisfério sul)
-        month = d.month
-        season_factor = 1.5 if (month >= 11 or month <= 3) else 0.7
-        # Padrão aleatório
-        random_factor = np.random.exponential(1.0)
-        
-        value = max(0, season_factor * random_factor * 5)
-        precipitation.append(value)
-    
-    return pd.DataFrame({
-        'date': dates,
-        'precipitation': precipitation
-    })
-
-def simulate_forecast_data(end_date, forecast_days):
-    """Simula dados de previsão"""
-    last_date = pd.to_datetime(end_date)
-    dates = pd.date_range(start=last_date + timedelta(days=1), periods=forecast_days)
-    
-    np.random.seed(43)  # Diferente da série histórica
-    precipitation = []
-    
-    for d in dates:
-        # Mais chuva no verão (considerando hemisfério sul)
-        month = d.month
-        season_factor = 1.5 if (month >= 11 or month <= 3) else 0.7
-        # Padrão aleatório com tendência de diminuição
-        day_factor = max(0.1, 1 - (d - dates[0]).days / forecast_days)
-        random_factor = np.random.exponential(0.8)
-        
-        value = max(0, season_factor * day_factor * random_factor * 5)
-        precipitation.append(value)
-    
-    return pd.DataFrame({
-        'date': dates,
-        'precipitation': precipitation
-    })
-
-def simulate_ml_forecast(regions, end_date, forecast_days):
-    """Simula previsões de ML para cada região"""
-    ml_forecasts = {}
-    
-    for region in regions:
-        last_date = pd.to_datetime(end_date)
-        dates = pd.date_range(start=last_date + timedelta(days=1), periods=forecast_days)
-        
-        np.random.seed(hash(region) % 100)  # Semente diferente para cada região
-        precipitation = []
-        
-        for d in dates:
-            # Variar por região (norte mais chuvoso que sul, etc.)
-            region_factor = 1.2 if "Norte" in region else 0.8 if "Sul" in region else 1.0
-            # Mais chuva no verão
-            month = d.month
-            season_factor = 1.5 if (month >= 11 or month <= 3) else 0.7
-            # Padrão aleatório
-            random_factor = np.random.exponential(0.8)
-            
-            value = max(0, region_factor * season_factor * random_factor * 5)
-            precipitation.append(value)
-        
-        ml_forecasts[region] = pd.DataFrame({
-            'date': dates,
-            'precipitation': precipitation,
-            'region': region
-        })
-    
-    return ml_forecasts
-
-# Constantes necessárias para o funcionamento (simplificadas)
-CAMPOS_GRANDE_AREAS = {
-    "Centro": [-20.4697, -54.6201],
-    "Região Norte": [-20.4297, -54.6101],
-    "Região Sul": [-20.5097, -54.6201],
-    "Região Leste": [-20.4697, -54.5801],
-    "Região Oeste": [-20.4697, -54.6601],
-    "Região Centro-Norte": [-20.4397, -54.6301],
-    "Região Centro-Sul": [-20.4997, -54.6301],
-    "Região Nordeste": [-20.4397, -54.5901],
-    "Região Noroeste": [-20.4397, -54.6501],
-    "Região Sudeste": [-20.4997, -54.5901],
-    "Região Sudoeste": [-20.4997, -54.6501]
-}
-
-PRECIPITATION_VARIABLES = {
-    "total_precipitation": "Precipitação Total (mm)",
-    "large_scale_precipitation": "Precipitação de Grande Escala (mm)",
-    "convective_precipitation": "Precipitação Convectiva (mm)"
-}
-
-COLORMAPS = ["Blues", "viridis", "plasma", "RdYlBu_r", "gist_earth"]
 
 # Iniciar a aplicação
 if __name__ == "__main__":
