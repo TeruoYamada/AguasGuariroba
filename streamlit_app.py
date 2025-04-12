@@ -701,3 +701,5 @@ def main():
         **Observações:**
         - Os dados do ERA5 têm resolução espacial limitada, o que pode afetar a precisão para áreas urbanas
         - A previsão é uma estimativa simples baseada em tendências recentes""")
+if __name__ == "__main__":
+    main()
