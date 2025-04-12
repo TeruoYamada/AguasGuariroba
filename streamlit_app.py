@@ -115,7 +115,7 @@ def setup_sidebar():
 def download_era5_data(params, client):
     """Baixa dados do ERA5 conforme parâmetros"""
     try:
-        filename = f"era5_data_{params['start_date']}_{params['end_date']}.nc"
+        filename = f"era5_data_{params['start_date']}_{params['end_date']}.grib"
 
         buffer = params['map_width']
         date_range = pd.date_range(params['start_date'], params['end_date'])
@@ -134,7 +134,7 @@ def download_era5_data(params, client):
             return None
 
         request = {
-            'product_type': 'reanalysis',  # Forçado para evitar problemas com ensemble_mean
+            'product_type': 'reanalysis',
             'variable': params['precip_var'],
             'year': sorted(list(set([str(d.year) for d in date_range]))),
             'month': sorted(list(set([f"{d.month:02d}" for d in date_range]))),
@@ -153,7 +153,7 @@ def download_era5_data(params, client):
             st.error("❌ O arquivo baixado está ausente ou corrompido.")
             return None
 
-        ds = xr.open_dataset(filename)
+        ds = xr.open_dataset(filename, engine="cfgrib")
         if 'time' not in ds.dims or len(ds.time) == 0:
             st.error("❌ Os dados baixados não contêm informações temporais válidas.")
             return None
