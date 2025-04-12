@@ -115,53 +115,89 @@ def setup_sidebar():
 def download_era5_data(params, client):
     """Baixa dados do ERA5 conforme parâmetros"""
     try:
-        filename = f"era5_data_{params['start_date']}_{params['end_date']}.nc"
-
-        buffer = params['map_width']
-        date_range = pd.date_range(params['start_date'], params['end_date'])
-
-        area = [
-            -20.35,
-            -54.75,
-            -20.60,
-            -54.50
-        ]
-
-        # Gerar lista de horários
-        time_list = [f"{h:02d}:00" for h in range(params['start_hour'], params['end_hour']+1, 3)]
-        if not time_list:
-            st.error("❌ Lista de horários está vazia. Verifique a hora inicial/final selecionada.")
+        # Verificar se as datas são válidas
+        if params['start_date'] > params['end_date']:
+            st.error("❌ Data de início maior que data de fim")
             return None
 
+        # Nome do arquivo de saída
+        filename = f"era5_data_{params['start_date']}_{params['end_date']}.nc"
+
+        # Definir área de interesse (Campo Grande e arredores)
+        area = [
+            params['lat_center'] + 0.15,  # Norte
+            params['lon_center'] - 0.15,   # Oeste
+            params['lat_center'] - 0.15,   # Sul
+            params['lon_center'] + 0.15    # Leste
+        ]
+
+        # Gerar lista de datas no formato YYYY-MM-DD
+        date_range = pd.date_range(
+            start=params['start_date'],
+            end=params['end_date'],
+            freq='D'
+        )
+        
+        # Gerar lista de horários no formato "HH:MM"
+        time_list = [f"{h:02d}:00" for h in range(params['start_hour'], params['end_hour'] + 1, 3)]
+        if not time_list:
+            st.error("❌ Intervalo de horas inválido")
+            return None
+
+        # Construir a requisição
         request = {
-            'product_type': 'reanalysis',
+            'product_type': params['product_type'],
             'variable': params['precip_var'],
-            'year': sorted(list(set([str(d.year) for d in date_range]))),
-            'month': sorted(list(set([f"{d.month:02d}" for d in date_range]))),
-            'day': sorted(list(set([f"{d.day:02d}" for d in date_range]))),
+            'year': [str(d.year) for d in date_range],
+            'month': [f"{d.month:02d}" for d in date_range],
+            'day': [f"{d.day:02d}" for d in date_range],
             'time': time_list,
             'area': area,
             'format': 'netcdf'
         }
 
-        st.write("📦 Requisição enviada:", request)
+        # Remover duplicatas (caso existam)
+        for time_param in ['year', 'month', 'day']:
+            request[time_param] = sorted(list(set(request[time_param])))
 
-        with st.spinner("Baixando dados do ERA5..."):
+        st.info("📦 Enviando requisição ao CDS...")
+
+        # Fazer o download dos dados
+        with st.spinner("Baixando dados do ERA5 (isso pode levar alguns minutos)..."):
             client.retrieve('reanalysis-era5-single-levels', request, filename)
 
+        # Verificar se o arquivo foi baixado corretamente
         if not os.path.exists(filename) or os.path.getsize(filename) < 1000:
-            st.error("❌ O arquivo baixado está ausente ou corrompido.")
+            st.error("❌ Falha no download - arquivo ausente ou corrompido")
             return None
 
-        ds = xr.open_dataset(filename)  # Usa engine netcdf padrão
-        if 'time' not in ds.dims or len(ds.time) == 0:
-            st.error("❌ Os dados baixados não contêm informações temporais válidas.")
-            return None
+        # Abrir o arquivo NetCDF
+        try:
+            ds = xr.open_dataset(filename)
+            
+            # Verificar se temos a dimensão temporal
+            if 'time' not in ds.dims:
+                st.error("❌ Dados não contêm dimensão temporal")
+                return None
+                
+            # Verificar se temos dados temporais válidos
+            if len(ds.time) == 0:
+                st.error("❌ Nenhum dado temporal encontrado")
+                return None
+                
+            # Converter unidades se necessário (m para mm)
+            if params['precip_var'] in ['total_precipitation', 'convective_precipitation', 'large_scale_precipitation']:
+                ds[params['precip_var']] = ds[params['precip_var']] * 1000
+                ds[params['precip_var']].attrs['units'] = 'mm'
 
-        return ds
+            return ds
+
+        except Exception as e:
+            st.error(f"❌ Erro ao processar arquivo NetCDF: {str(e)}")
+            return None
 
     except Exception as e:
-        st.error(f"Erro ao baixar dados: {str(e)}")
+        st.error(f"❌ Erro no download de dados: {str(e)}")
         logger.exception("Erro no download de dados")
         return None
 
