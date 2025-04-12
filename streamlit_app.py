@@ -10,6 +10,9 @@ import tempfile
 from datetime import datetime, timedelta
 from PIL import Image
 import logging
+import os
+
+os.system('pip install --upgrade pip')
 
 # Configuração de logging
 logging.basicConfig(level=logging.INFO)
